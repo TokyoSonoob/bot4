@@ -1,4 +1,4 @@
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer'); // เปลี่ยนจาก puppeteer-core เป็น puppeteer
 
 (async () => {
   // ดึง cookies base64 จาก ENV
@@ -21,7 +21,7 @@ const puppeteer = require('puppeteer-core');
   const browser = await puppeteer.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    executablePath: '/usr/bin/google-chrome', // ปรับ path ให้ตรงกับระบบที่ใช้บน Render
+    // ลบ executablePath ออก เพราะ puppeteer ตัวเต็มจัดการให้เอง
   });
 
   const page = await browser.newPage();
