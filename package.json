@@ -12,6 +12,6 @@
   "dependencies": {
     "discord.js": "^14.11.0",
     "openai": "^4.7.0",
-    "puppeteer-core": "^20.9.0"
+    "puppeteer": "^20.9.0"
   }
 }
