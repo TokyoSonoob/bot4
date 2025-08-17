@@ -1,10 +1,10 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-require("./server");
 const puppeteer = require('puppeteer-extra');
 const Stealth = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(Stealth());
+require("./server");
 
 const COOKIES_PATH = process.env.cookies;
 const GROUP_URLS = [
@@ -460,7 +460,7 @@ cron.schedule('0 0 * * *', () => {
 
 async function run() {
   const browser = await puppeteer.launch({
-  headless: 'new', // or true
+  headless: 'true',
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -472,6 +472,7 @@ async function run() {
     '--disable-blink-features=AutomationControlled'
   ]
 });
+
 
   const page = await browser.newPage();
   await page.setUserAgent(
