@@ -460,15 +460,18 @@ cron.schedule('0 0 * * *', () => {
 
 async function run() {
   const browser = await puppeteer.launch({
-    headless: false,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--lang=th-TH,th,en-US,en',
-      '--disable-blink-features=AutomationControlled'
-    ],
-    defaultViewport: { width: 1366, height: 768 }
-  });
+  headless: 'new', // or true
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-gpu',
+    '--disable-dev-shm-usage',
+    '--single-process',
+    '--no-zygote',
+    '--lang=th-TH,th,en-US,en',
+    '--disable-blink-features=AutomationControlled'
+  ]
+});
 
   const page = await browser.newPage();
   await page.setUserAgent(
