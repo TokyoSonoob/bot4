@@ -1,17 +1,15 @@
 {
-  "name": "facebook-discord-bot",
+  "name": "fb-group-poster",
   "version": "1.0.0",
-  "description": "D",
   "main": "index.js",
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "node-cron": "^4.2.1",
+    "puppeteer": "^24.16.2",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
   "scripts": {
     "start": "node index.js"
-  },
-  "engines": {
-    "node": ">=16"
-  },
-  "dependencies": {
-    "discord.js": "^14.11.0",
-    "openai": "^4.7.0",
-    "puppeteer": "^20.9.0"
   }
 }
