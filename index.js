@@ -6,7 +6,7 @@ const puppeteer = require('puppeteer-extra');
 const Stealth = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(Stealth());
 
-const COOKIES_PATH = path.resolve('./cookies.json');
+const COOKIES_PATH = process.env.cookies;
 const GROUP_URLS = [
   'https://web.facebook.com/groups/communitycraft',
   'https://web.facebook.com/groups/506463258587188'
