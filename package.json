@@ -1,23 +1,20 @@
 {
   "name": "fb-group-poster",
- "version": "1.0.0",
+  "version": "1.0.0",
+  "description": "",
   "main": "index.js",
+  "author": "",
+  "license": "ISC",
   "scripts": {
     "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
     "dotenv": "^17.2.1",
+    "express": "^4.19.2",
     "node-cron": "^4.2.1",
     "puppeteer": "^24.16.2",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
-  },
-  "scripts": {
-    "start": "node index.js"
   }
 }
