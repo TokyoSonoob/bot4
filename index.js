@@ -1,53 +1,43 @@
 // index.js
 require('dotenv').config();
-const fs = require('fs');          // ใช้เช็คไฟล์รูป/วิดีโอเท่านั้น
+const fs = require('fs');
 const path = require('path');
 
-// ให้ runtime ใช้ cache เดียวกับตอน build (ภายในโปรเจกต์)
+// ให้ runtime ใช้ cache เดียวกับตอน build (อยู่ในโปรเจกต์)
 const LOCAL_PUP_CACHE = path.join(__dirname, '.puppeteer');
 process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || LOCAL_PUP_CACHE;
 
 const puppeteerExtra = require('puppeteer-extra');
 const Stealth = require('puppeteer-extra-plugin-stealth');
 const cron = require('node-cron');
-const vanillaPuppeteer = require('puppeteer'); // ใช้หา path ของ Chrome ที่ puppeteer ดาวน์โหลดมา
+const vanillaPuppeteer = require('puppeteer');
 puppeteerExtra.use(Stealth());
 
-// polyfill fetch สำหรับ Node < 18 (บน Node 18+ จะไม่เข้าเงื่อนไขนี้)
+// fetch polyfill (Node < 18)
 if (typeof fetch === 'undefined') {
   global.fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 }
 
 /* ------------------- global error guards ------------------- */
-process.on('unhandledRejection', (err) => {
-  console.error('UNHANDLED REJECTION:', err);
-});
-process.on('uncaughtException', (err) => {
-  console.error('UNCAUGHT EXCEPTION:', err);
-  // ไม่ exit เอง
-});
+process.on('unhandledRejection', (err) => console.error('UNHANDLED REJECTION:', err));
+process.on('uncaughtException', (err) => console.error('UNCAUGHT EXCEPTION:', err));
 
-/* ------------------- health server (no express) ------------------- */
+/* ------------------- tiny health server (no express) ------------------- */
 let externalServerLoaded = false;
 try { require('./server'); externalServerLoaded = true; } catch {}
 const PORT = process.env.PORT || 10000;
 if (!externalServerLoaded) {
   const http = require('http');
   const server = http.createServer((req, res) => {
-    if (req.url === '/' || req.url === '/healthz') {
-      res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end('ok');
-    } else {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('not found');
-    }
+    if (req.url === '/' || req.url === '/healthz') { res.writeHead(200); res.end('ok'); }
+    else { res.writeHead(404); res.end('not found'); }
   });
   server.listen(PORT, () => console.log(`🌐 Web server running on port ${PORT}`));
 }
 
 /* ------------------- runtime switches ------------------- */
 const ON_RENDER = !!(process.env.RENDER || process.env.RENDER_EXTERNAL_URL);
-const HEADLESS = ON_RENDER ? 'new' : false; // local = เห็นจอ, Render = headless
+const HEADLESS = ON_RENDER ? 'new' : false;
 const SELF_URL = (process.env.RENDER_EXTERNAL_URL || process.env.KEEPALIVE_URL || '').replace(/\/$/, '');
 if (ON_RENDER && SELF_URL) {
   setInterval(async () => {
@@ -56,12 +46,10 @@ if (ON_RENDER && SELF_URL) {
   }, 9 * 60 * 1000);
 }
 
-// ใช้ Chrome ที่ puppeteer ดาวน์โหลดไว้ในโฟลเดอร์โปรเจกต์ (หรือ override ด้วย ENV ได้)
-const EXECUTABLE_PATH =
-  process.env.PUPPETEER_EXECUTABLE_PATH || vanillaPuppeteer.executablePath();
+const EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || vanillaPuppeteer.executablePath();
 console.log('🧭 Chrome path =', EXECUTABLE_PATH);
 
-/* ------------------- ENV (3 keys: cookies/email/password) ------------------- */
+/* ------------------- ENV ------------------- */
 const COOKIES_ENV = process.env.cookies || '';  // JSON array หรือ Base64(JSON array)
 const EMAIL = process.env.email || '';
 const PASSWORD = process.env.password || '';
@@ -91,7 +79,7 @@ const POST_MESSAGE = `✿･ﾟ: ✧･ﾟ: 𝗦𝗲𝗮 𝗠𝘂𝘄𝘄 :･�
 
   ⋆˙⟡♡⟡˙⋆ ✧ 𝑺𝒌𝒊𝒏 5 ลายเส้น ✧ ⋆˙⟡♡⟡˙⋆
 
-          𝑴𝒖𝒙 - 𝑺𝒌𝒚 - 𝑯𝒊𝒌𝒆𝒓𝒊 - 𝑵𝑱 - 𝑲𝒊𝒎
+          𝑴𝒖𝒙 - 𝑺𝒌𝒙 - 𝑯𝒊𝒌𝒆𝒓𝒊 - 𝑵𝑱 - 𝑲𝒊𝒎
        ราคาเป็นกันเอง - ตามงานได้ตลอด
 
    ✦• ประมูลทุกวัน จันทร์ • พุธ • ศุกร์ ✦•
@@ -123,32 +111,34 @@ async function loadCookies(page) {
   try { await page.setCookie(...arr); console.log(`✅ โหลด cookies จาก ENV (${arr.length})`); return true; }
   catch (e) { console.log('❌ setCookie ล้มเหลว:', e.message); return false; }
 }
-// ไม่บันทึกคุกกี้ลงไฟล์ตามที่ขอ (no-op)
-async function exportCookies() { /* no-op */ }
+async function exportCookies() { /* no-op ตามที่ขอ */ }
 
-/* ------------------- network light mode (ประหยัด RAM/แบนด์วิธ) ------------------- */
-async function setLightNetworkMode(page, enabled) {
-  if (enabled) {
-    if (page._lightHandler) return; // เปิดอยู่แล้ว
-    await page.setRequestInterception(true);
-    const handler = (req) => {
-      const type = req.resourceType();
-      const url = req.url();
-      // บล็อค resource หนัก ๆ ระหว่างท่องหน้า
-      if (type === 'image' || type === 'media' || type === 'font') return req.abort();
-      // กัน tracker คร่าว ๆ
-      if (/doubleclick\.net|googlesyndication\.com|googletagservices\.com/.test(url)) return req.abort();
-      req.continue();
-    };
-    page.on('request', handler);
-    page._lightHandler = handler;
-  } else {
-    if (!page._lightHandler) return;
-    // ⚠️ ใช้ .off แทน .removeListener (ป้องกัน error)
-    page.off('request', page._lightHandler);
-    page._lightHandler = null;
-    try { await page.setRequestInterception(false); } catch {}
+/* ------------------- resource blocking (always-on) ------------------- */
+// บล็อกหนัก ๆ แต่อนุญาตสิ่งจำเป็นของ Facebook + blob/data สำหรับพรีวิวไฟล์
+function shouldBlock(url, type) {
+  const allowBlobData = url.startsWith('blob:') || url.startsWith('data:');
+  const fbAllow = /^(https?:\/\/)?([a-z0-9-]+\.)?(facebook\.com|fbcdn\.net)\b/i.test(url);
+  if (allowBlobData || fbAllow) return false;
+
+  if (['image', 'media', 'font'].includes(type)) return true;
+  if (/doubleclick\.net|googlesyndication\.com|googletagservices\.com/.test(url)) return true;
+  return false;
+}
+async function enableBlocking(page) {
+  await page.setRequestInterception(true);
+  const handler = (req) => {
+    if (shouldBlock(req.url(), req.resourceType())) return req.abort();
+    req.continue();
+  };
+  page.on('request', handler);
+  page._blocker = handler;
+}
+async function disableBlocking(page) {
+  if (page._blocker) {
+    page.off('request', page._blocker);
+    page._blocker = null;
   }
+  try { await page.setRequestInterception(false); } catch {}
 }
 
 /* ------------------- helpers ------------------- */
@@ -178,7 +168,7 @@ async function getComposerTextbox(page) {
 }
 
 /* ------------------- navigation utils ------------------- */
-async function gotoWithRetry(page, url, options = {}, retries = 1) {
+async function gotoWithRetry(page, url, options = {}, retries = 2) {
   let lastErr;
   for (let i = 0; i <= retries; i++) {
     try {
@@ -187,7 +177,7 @@ async function gotoWithRetry(page, url, options = {}, retries = 1) {
     } catch (e) {
       lastErr = e;
       console.log(`⚠️ goto retry ${i + 1}/${retries + 1} failed: ${e.message}`);
-      await delay(2000);
+      await delay(2000 + i * 1000);
     }
   }
   throw lastErr;
@@ -212,7 +202,7 @@ async function ensureLoggedIn(page) {
       return false;
     }
     console.log('✅ ล็อกอินสำเร็จ');
-    await exportCookies(); // no-op
+    await exportCookies();
     return true;
   } catch (e) {
     console.log('❌ ล็อกอินล้มเหลว:', e.message);
@@ -329,13 +319,10 @@ async function closeAnyDialog(page) {
 /* ------------------- core flow ------------------- */
 async function postToGroup(page, groupUrl, message) {
   console.log(`\n➡️ ไปที่กลุ่ม: ${groupUrl}`);
-
-  // เปิดโหมดประหยัดก่อนท่องหน้า
-  await setLightNetworkMode(page, true);
-
   await gotoWithRetry(page, groupUrl, {}, 2);
+
   if (!(await ensureLoggedIn(page))) return false;
-  await delay(2000);
+  await delay(1500);
 
   let opened = await clickComposer(page);
   if (!opened) {
@@ -346,10 +333,7 @@ async function postToGroup(page, groupUrl, message) {
   }
   if (!opened) { console.log('❌ ไม่พบกล่องเริ่มเขียนโพสต์'); return false; }
 
-  // จะเริ่มใช้งานสื่อ/พิมพ์ข้อความ ปิด light mode เพื่อไม่บล็อคสิ่งจำเป็น
-  await setLightNetworkMode(page, false);
-
-  await delay(1500);
+  await delay(1200);
 
   const imagePath = path.resolve('./test.png');
   const videoPath = path.resolve('./main.mp4');
@@ -364,7 +348,7 @@ async function postToGroup(page, groupUrl, message) {
 
   await textbox.el.focus();
   await page.type(textbox.sel, message, { delay: 40 });
-  await delay(800);
+  await delay(600);
 
   await page.waitForFunction(() => {
     const dlg = document.querySelector('div[role="dialog"]'); if (!dlg) return false;
@@ -385,10 +369,6 @@ async function postToGroup(page, groupUrl, message) {
   console.log('⏳ กำลังโพสต์...');
   await page.waitForFunction(() => !document.querySelector('div[role="dialog"]'), { timeout: 45000 }).catch(() => {});
   console.log('✅ โพสต์สำเร็จ (คาดว่า)');
-
-  // กลับเข้าโหมดประหยัด เมื่อจะสลับไปกลุ่มต่อไป
-  await setLightNetworkMode(page, true);
-
   return true;
 }
 
@@ -408,16 +388,14 @@ cron.schedule('0 0 * * *',  () => { console.log('🕛 00:00 ICT → เริ่
 async function run() {
   const browser = await puppeteerExtra.launch({
     headless: HEADLESS,
-    executablePath: EXECUTABLE_PATH, // ใช้ Chrome ใน .puppeteer
+    executablePath: EXECUTABLE_PATH,
     protocolTimeout: 120000,
-    defaultViewport: { width: 1280, height: 720 }, // ลด footprint
+    defaultViewport: { width: 1280, height: 720 },
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--single-process',
-      '--no-zygote',
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-extensions',
@@ -429,13 +407,11 @@ async function run() {
       '--mute-audio',
       '--lang=th-TH,th,en-US,en',
       '--window-size=1280,720',
+      '--js-flags=--max-old-space-size=256'
     ],
   });
 
-  const gracefulShutdown = async () => {
-    try { await browser.close(); } catch {}
-    process.exit(0);
-  };
+  const gracefulShutdown = async () => { try { await browser.close(); } catch {} process.exit(0); };
   process.on('SIGTERM', gracefulShutdown);
   process.on('SIGINT', gracefulShutdown);
 
@@ -443,35 +419,33 @@ async function run() {
   await page.setDefaultNavigationTimeout(60000);
   await page.setDefaultTimeout(45000);
 
-  await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-  );
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7' });
   await page.setBypassCSP(true);
 
+  // เปิด resource blocking ถาวร
+  await enableBlocking(page);
+
   await loadCookies(page);
 
-  // เริ่มด้วยโหมดประหยัด
-  await setLightNetworkMode(page, true);
-
-  // เข้าโฮมเพื่อทดสอบสถานะล็อกอิน (และ trigger redirect ถ้ามี)
-  try { await page.goto('https://web.facebook.com/', { waitUntil: 'domcontentloaded' }); } catch {}
+  // โฮมเพจเพื่อ warm-up session
+  try { await page.goto('https://web.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch {}
 
   for (let i = 0; i < GROUP_URLS.length; i++) {
     const url = GROUP_URLS[i];
     try {
       if (i === 0 && (page.url().includes('login') || page.url().includes('checkpoint'))) {
-        // ปิด light mode ชั่วคราวเวลา login
-        await setLightNetworkMode(page, false);
-        if (!(await ensureLoggedIn(page))) { await browser.close(); return; }
-        // กลับเข้า light mode หลัง login
-        await setLightNetworkMode(page, true);
+        // ปิดบล็อคชั่วคราวเพื่อให้หน้า login โหลดครบ
+        await disableBlocking(page);
+        const okLogin = await ensureLoggedIn(page);
+        await enableBlocking(page);
+        if (!okLogin) { await browser.close(); return; }
       }
 
       await closeAnyDialog(page);
       const ok = await postToGroup(page, url, POST_MESSAGE);
 
-      await exportCookies(); // no-op
+      await exportCookies();
 
       if (i < GROUP_URLS.length - 1) {
         const waitMs = jitter(5000, 9000);
@@ -489,6 +463,6 @@ async function run() {
   await browser.close();
 }
 
-// รันทันทีเมื่อ start (ทั้ง Local/Render)
+// รันทันทีเมื่อ start (Local/Render)
 if (require.main === module) { safeRun(); }
 module.exports = { run: safeRun };
