@@ -2,13 +2,18 @@
 require('dotenv').config();
 const fs = require('fs');          // ใช้เช็คไฟล์รูป/วิดีโอเท่านั้น
 const path = require('path');
+
+// ให้ runtime ใช้ cache เดียวกับตอน build (ภายในโปรเจกต์)
+const LOCAL_PUP_CACHE = path.join(__dirname, '.puppeteer');
+process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || LOCAL_PUP_CACHE;
+
 const puppeteerExtra = require('puppeteer-extra');
 const Stealth = require('puppeteer-extra-plugin-stealth');
 const cron = require('node-cron');
-const vanillaPuppeteer = require('puppeteer'); // ใช้หา path ของ Chrome ที่ puppeteer ดาวน์โหลดมา
+const vanillaPuppeteer = require('puppeteer'); // ใช้หา path ของ Chrome ที่ติดตั้งใน cache นี้
 puppeteerExtra.use(Stealth());
 
-// polyfill fetch สำหรับ Node < 18 (บน Node 18+ จะไม่เข้าเงื่อนไขนี้)
+// polyfill fetch สำหรับ Node < 18
 if (typeof fetch === 'undefined') {
   global.fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 }
@@ -42,7 +47,7 @@ if (ON_RENDER && SELF_URL) {
   }, 9 * 60 * 1000);
 }
 
-// Chrome path ที่ puppeteer ดาวน์โหลด (หรือ override ด้วย ENV ได้)
+// ใช้ Chrome ที่ puppeteer ดาวน์โหลดไว้ในโฟลเดอร์โปรเจกต์
 const EXECUTABLE_PATH =
   process.env.PUPPETEER_EXECUTABLE_PATH || vanillaPuppeteer.executablePath();
 
@@ -98,9 +103,7 @@ const jitter = (minMs, maxMs) => Math.floor(Math.random() * (maxMs - minMs + 1))
 /* ------------------- cookies loader (ENV only) ------------------- */
 function parseCookies(raw) {
   if (!raw) return null;
-  // ลอง JSON ตรง ๆ
   try { const arr = JSON.parse(raw); if (Array.isArray(arr)) return arr; } catch {}
-  // ลอง Base64 → JSON
   try { const txt = Buffer.from(raw, 'base64').toString('utf8'); const arr = JSON.parse(txt); if (Array.isArray(arr)) return arr; } catch {}
   return null;
 }
@@ -344,7 +347,7 @@ cron.schedule('0 0 * * *',  () => { console.log('🕛 00:00 ICT → เริ่
 async function run() {
   const browser = await puppeteerExtra.launch({
     headless: HEADLESS,
-    executablePath: EXECUTABLE_PATH, // ใช้ Chrome ที่ puppeteer ดาวน์โหลด
+    executablePath: EXECUTABLE_PATH, // ใช้ Chrome ใน .puppeteer
     defaultViewport: { width: 1366, height: 864 },
     args: [
       '--no-sandbox',
@@ -365,7 +368,7 @@ async function run() {
 
   await loadCookies(page);
 
-  // เข้าโฮมเพื่อทดสอบสถานะล็อกอิน (และ trigger redirect ถ้ามี)
+  // เข้าโฮมเพื่อทดสอบสถานะล็อกอิน
   try { await page.goto('https://web.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch {}
 
   for (let i = 0; i < GROUP_URLS.length; i++) {
