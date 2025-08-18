@@ -24,7 +24,7 @@ process.on('unhandledRejection', (err) => {
 });
 process.on('uncaughtException', (err) => {
   console.error('UNCAUGHT EXCEPTION:', err);
-  // ไม่ exit เอง ปล่อยให้แพลตฟอร์มจัดการ/หรือโปรเซสอยู่ต่อ
+  // ไม่ exit เอง
 });
 
 /* ------------------- health server (no express) ------------------- */
@@ -91,7 +91,7 @@ const POST_MESSAGE = `✿･ﾟ: ✧･ﾟ: 𝗦𝗲𝗮 𝗠𝘂𝘄𝘄 :･�
 
   ⋆˙⟡♡⟡˙⋆ ✧ 𝑺𝒌𝒊𝒏 5 ลายเส้น ✧ ⋆˙⟡♡⟡˙⋆
 
-          𝑴𝒖𝒙 - 𝑺𝒌𝒙 - 𝑯𝒊𝒌𝒆𝒓𝒊 - 𝑵𝑱 - 𝑲𝒊𝒎
+          𝑴𝒖𝒙 - 𝑺𝒌𝒚 - 𝑯𝒊𝒌𝒆𝒓𝒊 - 𝑵𝑱 - 𝑲𝒊𝒎
        ราคาเป็นกันเอง - ตามงานได้ตลอด
 
    ✦• ประมูลทุกวัน จันทร์ • พุธ • ศุกร์ ✦•
@@ -128,7 +128,6 @@ async function exportCookies() { /* no-op */ }
 
 /* ------------------- network light mode (ประหยัด RAM/แบนด์วิธ) ------------------- */
 async function setLightNetworkMode(page, enabled) {
-  // เก็บ handler เดิมไว้เพื่อถอดได้
   if (enabled) {
     if (page._lightHandler) return; // เปิดอยู่แล้ว
     await page.setRequestInterception(true);
@@ -137,7 +136,7 @@ async function setLightNetworkMode(page, enabled) {
       const url = req.url();
       // บล็อค resource หนัก ๆ ระหว่างท่องหน้า
       if (type === 'image' || type === 'media' || type === 'font') return req.abort();
-      // ตัดพวก ad/tracker คร่าว ๆ
+      // กัน tracker คร่าว ๆ
       if (/doubleclick\.net|googlesyndication\.com|googletagservices\.com/.test(url)) return req.abort();
       req.continue();
     };
@@ -145,7 +144,8 @@ async function setLightNetworkMode(page, enabled) {
     page._lightHandler = handler;
   } else {
     if (!page._lightHandler) return;
-    page.removeListener('request', page._lightHandler);
+    // ⚠️ ใช้ .off แทน .removeListener (ป้องกัน error)
+    page.off('request', page._lightHandler);
     page._lightHandler = null;
     try { await page.setRequestInterception(false); } catch {}
   }
@@ -177,6 +177,22 @@ async function getComposerTextbox(page) {
   return null;
 }
 
+/* ------------------- navigation utils ------------------- */
+async function gotoWithRetry(page, url, options = {}, retries = 1) {
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000, ...options });
+      return true;
+    } catch (e) {
+      lastErr = e;
+      console.log(`⚠️ goto retry ${i + 1}/${retries + 1} failed: ${e.message}`);
+      await delay(2000);
+    }
+  }
+  throw lastErr;
+}
+
 /* ------------------- login fallback (email/password) ------------------- */
 async function ensureLoggedIn(page) {
   if (!(page.url().includes('facebook.com/login') || page.url().includes('checkpoint'))) return true;
@@ -190,7 +206,7 @@ async function ensureLoggedIn(page) {
     const loginBtn = await page.$('button[name="login"], #loginbutton');
     if (loginBtn) await loginBtn.click(); else await page.keyboard.press('Enter');
 
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 });
+    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 45000 });
     if (page.url().includes('checkpoint')) {
       console.log('⚠️ ติด checkpoint ต้องยืนยันในเบราว์เซอร์จริงก่อน');
       return false;
@@ -317,7 +333,7 @@ async function postToGroup(page, groupUrl, message) {
   // เปิดโหมดประหยัดก่อนท่องหน้า
   await setLightNetworkMode(page, true);
 
-  await page.goto(groupUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+  await gotoWithRetry(page, groupUrl, {}, 2);
   if (!(await ensureLoggedIn(page))) return false;
   await delay(2000);
 
