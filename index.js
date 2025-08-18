@@ -10,13 +10,22 @@ process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || LOCAL_PUP_C
 const puppeteerExtra = require('puppeteer-extra');
 const Stealth = require('puppeteer-extra-plugin-stealth');
 const cron = require('node-cron');
-const vanillaPuppeteer = require('puppeteer'); // ใช้หา path ของ Chrome ที่ติดตั้งใน cache นี้
+const vanillaPuppeteer = require('puppeteer'); // ใช้หา path ของ Chrome ที่ puppeteer ดาวน์โหลดมา
 puppeteerExtra.use(Stealth());
 
-// polyfill fetch สำหรับ Node < 18
+// polyfill fetch สำหรับ Node < 18 (บน Node 18+ จะไม่เข้าเงื่อนไขนี้)
 if (typeof fetch === 'undefined') {
   global.fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 }
+
+/* ------------------- global error guards ------------------- */
+process.on('unhandledRejection', (err) => {
+  console.error('UNHANDLED REJECTION:', err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+  // ไม่ exit เอง ปล่อยให้แพลตฟอร์มจัดการ/หรือโปรเซสอยู่ต่อ
+});
 
 /* ------------------- health server (no express) ------------------- */
 let externalServerLoaded = false;
@@ -47,9 +56,10 @@ if (ON_RENDER && SELF_URL) {
   }, 9 * 60 * 1000);
 }
 
-// ใช้ Chrome ที่ puppeteer ดาวน์โหลดไว้ในโฟลเดอร์โปรเจกต์
+// ใช้ Chrome ที่ puppeteer ดาวน์โหลดไว้ในโฟลเดอร์โปรเจกต์ (หรือ override ด้วย ENV ได้)
 const EXECUTABLE_PATH =
   process.env.PUPPETEER_EXECUTABLE_PATH || vanillaPuppeteer.executablePath();
+console.log('🧭 Chrome path =', EXECUTABLE_PATH);
 
 /* ------------------- ENV (3 keys: cookies/email/password) ------------------- */
 const COOKIES_ENV = process.env.cookies || '';  // JSON array หรือ Base64(JSON array)
@@ -81,7 +91,7 @@ const POST_MESSAGE = `✿･ﾟ: ✧･ﾟ: 𝗦𝗲𝗮 𝗠𝘂𝘄𝘄 :･�
 
   ⋆˙⟡♡⟡˙⋆ ✧ 𝑺𝒌𝒊𝒏 5 ลายเส้น ✧ ⋆˙⟡♡⟡˙⋆
 
-          𝑴𝒖𝒙 - 𝑺𝒌𝒚 - 𝑯𝒊𝒌𝒆𝒓𝒊 - 𝑵𝑱 - 𝑲𝒊𝒎
+          𝑴𝒖𝒙 - 𝑺𝒌𝒙 - 𝑯𝒊𝒌𝒆𝒓𝒊 - 𝑵𝑱 - 𝑲𝒊𝒎
        ราคาเป็นกันเอง - ตามงานได้ตลอด
 
    ✦• ประมูลทุกวัน จันทร์ • พุธ • ศุกร์ ✦•
@@ -115,6 +125,31 @@ async function loadCookies(page) {
 }
 // ไม่บันทึกคุกกี้ลงไฟล์ตามที่ขอ (no-op)
 async function exportCookies() { /* no-op */ }
+
+/* ------------------- network light mode (ประหยัด RAM/แบนด์วิธ) ------------------- */
+async function setLightNetworkMode(page, enabled) {
+  // เก็บ handler เดิมไว้เพื่อถอดได้
+  if (enabled) {
+    if (page._lightHandler) return; // เปิดอยู่แล้ว
+    await page.setRequestInterception(true);
+    const handler = (req) => {
+      const type = req.resourceType();
+      const url = req.url();
+      // บล็อค resource หนัก ๆ ระหว่างท่องหน้า
+      if (type === 'image' || type === 'media' || type === 'font') return req.abort();
+      // ตัดพวก ad/tracker คร่าว ๆ
+      if (/doubleclick\.net|googlesyndication\.com|googletagservices\.com/.test(url)) return req.abort();
+      req.continue();
+    };
+    page.on('request', handler);
+    page._lightHandler = handler;
+  } else {
+    if (!page._lightHandler) return;
+    page.removeListener('request', page._lightHandler);
+    page._lightHandler = null;
+    try { await page.setRequestInterception(false); } catch {}
+  }
+}
 
 /* ------------------- helpers ------------------- */
 async function findButtonByText(page, keywords, { role = 'button', exclude = ['ความคิดเห็น'] } = {}) {
@@ -278,8 +313,11 @@ async function closeAnyDialog(page) {
 /* ------------------- core flow ------------------- */
 async function postToGroup(page, groupUrl, message) {
   console.log(`\n➡️ ไปที่กลุ่ม: ${groupUrl}`);
-  await page.goto(groupUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
+  // เปิดโหมดประหยัดก่อนท่องหน้า
+  await setLightNetworkMode(page, true);
+
+  await page.goto(groupUrl, { waitUntil: 'networkidle2', timeout: 60000 });
   if (!(await ensureLoggedIn(page))) return false;
   await delay(2000);
 
@@ -291,6 +329,9 @@ async function postToGroup(page, groupUrl, message) {
     opened = await clickComposer(page);
   }
   if (!opened) { console.log('❌ ไม่พบกล่องเริ่มเขียนโพสต์'); return false; }
+
+  // จะเริ่มใช้งานสื่อ/พิมพ์ข้อความ ปิด light mode เพื่อไม่บล็อคสิ่งจำเป็น
+  await setLightNetworkMode(page, false);
 
   await delay(1500);
 
@@ -328,6 +369,10 @@ async function postToGroup(page, groupUrl, message) {
   console.log('⏳ กำลังโพสต์...');
   await page.waitForFunction(() => !document.querySelector('div[role="dialog"]'), { timeout: 45000 }).catch(() => {});
   console.log('✅ โพสต์สำเร็จ (คาดว่า)');
+
+  // กลับเข้าโหมดประหยัด เมื่อจะสลับไปกลุ่มต่อไป
+  await setLightNetworkMode(page, true);
+
   return true;
 }
 
@@ -348,18 +393,40 @@ async function run() {
   const browser = await puppeteerExtra.launch({
     headless: HEADLESS,
     executablePath: EXECUTABLE_PATH, // ใช้ Chrome ใน .puppeteer
-    defaultViewport: { width: 1366, height: 864 },
+    protocolTimeout: 120000,
+    defaultViewport: { width: 1280, height: 720 }, // ลด footprint
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-gpu',
       '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--single-process',
+      '--no-zygote',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      '--disable-features=site-per-process,TranslateUI,BlinkGenPropertyTrees',
+      '--metrics-recording-only',
+      '--mute-audio',
       '--lang=th-TH,th,en-US,en',
-      '--disable-blink-features=AutomationControlled',
+      '--window-size=1280,720',
     ],
   });
 
+  const gracefulShutdown = async () => {
+    try { await browser.close(); } catch {}
+    process.exit(0);
+  };
+  process.on('SIGTERM', gracefulShutdown);
+  process.on('SIGINT', gracefulShutdown);
+
   const page = await browser.newPage();
+  await page.setDefaultNavigationTimeout(60000);
+  await page.setDefaultTimeout(45000);
+
   await page.setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
   );
@@ -368,14 +435,21 @@ async function run() {
 
   await loadCookies(page);
 
-  // เข้าโฮมเพื่อทดสอบสถานะล็อกอิน
-  try { await page.goto('https://web.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch {}
+  // เริ่มด้วยโหมดประหยัด
+  await setLightNetworkMode(page, true);
+
+  // เข้าโฮมเพื่อทดสอบสถานะล็อกอิน (และ trigger redirect ถ้ามี)
+  try { await page.goto('https://web.facebook.com/', { waitUntil: 'domcontentloaded' }); } catch {}
 
   for (let i = 0; i < GROUP_URLS.length; i++) {
     const url = GROUP_URLS[i];
     try {
       if (i === 0 && (page.url().includes('login') || page.url().includes('checkpoint'))) {
+        // ปิด light mode ชั่วคราวเวลา login
+        await setLightNetworkMode(page, false);
         if (!(await ensureLoggedIn(page))) { await browser.close(); return; }
+        // กลับเข้า light mode หลัง login
+        await setLightNetworkMode(page, true);
       }
 
       await closeAnyDialog(page);
