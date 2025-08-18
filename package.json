@@ -7,13 +7,12 @@
   "license": "ISC",
   "engines": { "node": ">=18" },
   "scripts": {
-    "postinstall": "npx -y puppeteer browsers install chrome",
+    "postinstall": "PUPPETEER_CACHE_DIR=.puppeteer npx -y puppeteer browsers install chrome",
     "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "dotenv": "^17.2.1",
-    "express": "^4.19.2",
     "node-cron": "^4.2.1",
     "puppeteer": "^24.16.2",
     "puppeteer-extra": "^3.3.6",
