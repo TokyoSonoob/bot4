@@ -1,13 +1,14 @@
 // index.js
 require('dotenv').config();
-const fs = require('fs');          // ยังใช้เช็คไฟล์รูป/วิดีโอ
+const fs = require('fs');          // ใช้เช็คไฟล์รูป/วิดีโอเท่านั้น
 const path = require('path');
-const puppeteer = require('puppeteer-extra');
+const puppeteerExtra = require('puppeteer-extra');
 const Stealth = require('puppeteer-extra-plugin-stealth');
 const cron = require('node-cron');
-puppeteer.use(Stealth());
+const vanillaPuppeteer = require('puppeteer'); // ใช้หา path ของ Chrome ที่ puppeteer ดาวน์โหลดมา
+puppeteerExtra.use(Stealth());
 
-// polyfill fetch สำหรับ Node < 18 (บน Node 18+ ไม่เข้าบล็อกนี้)
+// polyfill fetch สำหรับ Node < 18 (บน Node 18+ จะไม่เข้าเงื่อนไขนี้)
 if (typeof fetch === 'undefined') {
   global.fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 }
@@ -27,7 +28,7 @@ if (!externalServerLoaded) {
       res.end('not found');
     }
   });
-  server.listen(PORT, () => console.log(`🌐 Health server on :${PORT}`));
+  server.listen(PORT, () => console.log(`🌐 Web server running on port ${PORT}`));
 }
 
 /* ------------------- runtime switches ------------------- */
@@ -40,6 +41,10 @@ if (ON_RENDER && SELF_URL) {
     catch (e) { console.log('♻️ keep-alive failed:', e.message); }
   }, 9 * 60 * 1000);
 }
+
+// Chrome path ที่ puppeteer ดาวน์โหลด (หรือ override ด้วย ENV ได้)
+const EXECUTABLE_PATH =
+  process.env.PUPPETEER_EXECUTABLE_PATH || vanillaPuppeteer.executablePath();
 
 /* ------------------- ENV (3 keys: cookies/email/password) ------------------- */
 const COOKIES_ENV = process.env.cookies || '';  // JSON array หรือ Base64(JSON array)
@@ -71,7 +76,7 @@ const POST_MESSAGE = `✿･ﾟ: ✧･ﾟ: 𝗦𝗲𝗮 𝗠𝘂𝘄𝘄 :･�
 
   ⋆˙⟡♡⟡˙⋆ ✧ 𝑺𝒌𝒊𝒏 5 ลายเส้น ✧ ⋆˙⟡♡⟡˙⋆
 
-          𝑴𝒖𝒙 - 𝑺𝒌𝒚 - 𝑯𝒊𝒌𝒆𝑟𝒊 - 𝑵𝑱 - 𝑲𝒊𝒎
+          𝑴𝒖𝒙 - 𝑺𝒌𝒚 - 𝑯𝒊𝒌𝒆𝒓𝒊 - 𝑵𝑱 - 𝑲𝒊𝒎
        ราคาเป็นกันเอง - ตามงานได้ตลอด
 
    ✦• ประมูลทุกวัน จันทร์ • พุธ • ศุกร์ ✦•
@@ -93,9 +98,9 @@ const jitter = (minMs, maxMs) => Math.floor(Math.random() * (maxMs - minMs + 1))
 /* ------------------- cookies loader (ENV only) ------------------- */
 function parseCookies(raw) {
   if (!raw) return null;
-  // ลอง parse JSON ตรง ๆ
+  // ลอง JSON ตรง ๆ
   try { const arr = JSON.parse(raw); if (Array.isArray(arr)) return arr; } catch {}
-  // ลองถอด Base64 → JSON
+  // ลอง Base64 → JSON
   try { const txt = Buffer.from(raw, 'base64').toString('utf8'); const arr = JSON.parse(txt); if (Array.isArray(arr)) return arr; } catch {}
   return null;
 }
@@ -337,8 +342,9 @@ cron.schedule('0 12 * * *', () => { console.log('🕛 12:00 ICT → เริ่
 cron.schedule('0 0 * * *',  () => { console.log('🕛 00:00 ICT → เริ่มโพสต์'); safeRun(); }, { timezone: 'Asia/Bangkok' });
 
 async function run() {
-  const browser = await puppeteer.launch({
+  const browser = await puppeteerExtra.launch({
     headless: HEADLESS,
+    executablePath: EXECUTABLE_PATH, // ใช้ Chrome ที่ puppeteer ดาวน์โหลด
     defaultViewport: { width: 1366, height: 864 },
     args: [
       '--no-sandbox',
@@ -359,7 +365,7 @@ async function run() {
 
   await loadCookies(page);
 
-  // เข้าโฮมเพจเพื่อทดสอบสถานะล็อกอิน (และ trigger redirect ถ้ามี)
+  // เข้าโฮมเพื่อทดสอบสถานะล็อกอิน (และ trigger redirect ถ้ามี)
   try { await page.goto('https://web.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch {}
 
   for (let i = 0; i < GROUP_URLS.length; i++) {
