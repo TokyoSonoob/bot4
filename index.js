@@ -26,6 +26,7 @@ const client = new Client({
 });
 
 const { db, admin } = require("./firebase");
+require("./music")(client);
 require("./server");
 require("./welcome")(client);
 require("./goodbye")(client);
@@ -36,10 +37,11 @@ require("./room")(client);
 require("./delete")(client);
 require("./em")(client);
 require("./verify")(client);
-require("./music")(client);
 require("./invite")(client);
 require("./private")(client);
 require("./help")(client);
+require("./sound")(client);
+require("./fix")(client);
 /* ---------- helpers ---------- */
 function buildReportEmbed() {
   const list = client.guilds.cache

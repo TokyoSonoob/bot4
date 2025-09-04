@@ -285,13 +285,18 @@ module.exports = (client) => {
 
     const hostMsg = await postChannel.send({ embeds: [hostEmbed], components: [row] });
 
-    // เซฟ config + เริ่มตัวนับที่ 0
+    // เซฟ config + เริ่มตัวนับที่ 0 (เก็บ page1.title เป็น fallback ให้ /addticket)
     await cfgRef.set({
       guildId: guild.id,
       postChannelId: postChannel.id,
       hostMessageId: hostMsg.id,
       categoryId: p1.categoryId,
-      page1: p1,
+      page1: {
+        title: p1.title,
+        description: p1.description,
+        url: p1.url,
+        buttonLabel: p1.buttonLabel,
+      },
       page2: p2,
       count: 0, // เริ่ม 0 แล้วค่อย +1 ตอนกดปุ่ม
       createdBy: interaction.user.id,
@@ -326,7 +331,7 @@ module.exports = (client) => {
       if (!me.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
         return safeReply(interaction, { content: "❌ บอทไม่มีสิทธิ์ Manage Channels", ephemeral: true });
       }
-    } catch (_) {}
+    } catch {}
 
     // เพิ่มตัวนับ
     await cfgRef.update({
@@ -449,5 +454,115 @@ module.exports = (client) => {
         await channel?.send?.("❌ ลบห้องไม่สำเร็จ กรุณาตรวจสอบสิทธิ์บอท (Manage Channels)")?.catch(() => {});
       } catch {}
     }
+  });
+
+  // ===== 8) เปิดตั๋วผ่าน "เมนูเลื่อนเลือก" (รองรับโพสต์ที่ถูก /fix แปลงเป็น select) =====
+  client.on(Events.InteractionCreate, async (interaction) => {
+    if (!interaction.isStringSelectMenu()) return;
+    if (interaction.customId !== "ticket_open_select") return;
+
+    // ป้องกัน timeout
+    if (!interaction.deferred && !interaction.replied) {
+      try { await interaction.deferReply({ ephemeral: true }); } catch {}
+    }
+
+    const value = interaction.values?.[0];
+    if (!value) {
+      return interaction.editReply({ content: "❌ ไม่ได้เลือกประเภท" });
+    }
+
+    // value ควรเป็น "ticket_open:<configId>" หรือ "<configId>"
+    const customId = value.startsWith("ticket_open:") ? value : `ticket_open:${value}`;
+    const configId = customId.split(":")[1];
+    const guild = interaction.guild;
+
+    const cfgRef = db.collection("ticket_configs").doc(guild.id).collection("configs").doc(configId);
+    const snap = await cfgRef.get();
+    if (!snap.exists) {
+      return interaction.editReply({ content: "❌ ไม่พบชุดตั๋วนี้แล้ว" });
+    }
+    const cfg = snap.data();
+
+    // ตรวจสิทธิ์บอท
+    try {
+      const me = guild.members.me;
+      if (!me.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+        return interaction.editReply({ content: "❌ บอทไม่มีสิทธิ์ Manage Channels" });
+      }
+    } catch {}
+
+    // เพิ่มตัวนับ
+    await cfgRef.update({
+      count: admin.firestore.FieldValue.increment(1),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    const latest = await cfgRef.get();
+    const count = latest.data().count;
+
+    const roomName = `${cfg.page2.roomNamePrefix}${count}`;
+    const parentId = cfg.categoryId;
+
+    // สร้างห้อง
+    const created = await guild.channels.create({
+      name: roomName,
+      type: ChannelType.GuildText,
+      parent: parentId || undefined,
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone,
+          deny: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ReadMessageHistory,
+          ],
+        },
+        {
+          id: interaction.user.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ReadMessageHistory,
+            PermissionsBitField.Flags.AttachFiles,
+            PermissionsBitField.Flags.EmbedLinks,
+          ],
+        },
+        {
+          id: guild.members.me.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ReadMessageHistory,
+            PermissionsBitField.Flags.ManageChannels,
+            PermissionsBitField.Flags.EmbedLinks,
+            PermissionsBitField.Flags.AttachFiles,
+          ],
+        },
+      ],
+    });
+
+    // Embed หน้า 2
+    const e2 = new EmbedBuilder()
+      .setTitle(cfg.page2.title)
+      .setDescription(cfg.page2.description)
+      .setColor(0x7c3aed)
+      .setFooter({ text: `Make by Purple Shop • Ticket #${count}` })
+      .setTimestamp();
+    if (cfg.page2.url && /^https?:\/\//i.test(cfg.page2.url)) e2.setImage(cfg.page2.url);
+
+    // ปุ่มปิดห้อง
+    const closeBtn = new ButtonBuilder()
+      .setCustomId(`ticket_close:${configId}:${count}:${interaction.user.id}`)
+      .setLabel("ปิดห้อง")
+      .setStyle(ButtonStyle.Danger);
+
+    const row = new ActionRowBuilder().addComponents(closeBtn);
+
+    await created.send({
+      content: `<@${interaction.user.id}>`,
+      embeds: [e2],
+      components: [row],
+    });
+
+    return interaction.editReply({ content: `✅ เปิดห้อง **${roomName}** เรียบร้อย` });
   });
 };
