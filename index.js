@@ -42,7 +42,7 @@ require("./private")(client);
 require("./help")(client);
 require("./sound")(client);
 require("./fix")(client);
-require("./s")(client);
+require("./move")(client);
 
 /* ---------- helpers ---------- */
 function buildReportEmbed() {
@@ -186,4 +186,5 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 
 client.login(process.env.token);
+
 
