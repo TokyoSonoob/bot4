@@ -42,6 +42,8 @@ require("./private")(client);
 require("./help")(client);
 require("./sound")(client);
 require("./fix")(client);
+require("./s")(client);
+
 /* ---------- helpers ---------- */
 function buildReportEmbed() {
   const list = client.guilds.cache
@@ -184,3 +186,4 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 
 client.login(process.env.token);
+
