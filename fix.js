@@ -173,7 +173,7 @@ module.exports = (client) => {
       await client.application.commands.create(
         new SlashCommandBuilder()
           .setName("fix")
-          .setDescription("สลับรูปแบบโพสต์ตั๋ว: ปุ่ม ↔ เมนูเลื่อนเลือก (ไม่แก้ embed) — กดซ้ำได้ และรีบอทอัตโนมัติ")
+          .setDescription("สลับรูปแบบตั๋ว")
           .setDMPermission(false)
           .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
           .toJSON()

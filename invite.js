@@ -1,7 +1,3 @@
-// invite.js
-// ฟีเจอร์: /invite → เปิดฟอร์มให้ตั้ง Title/Description (รองรับ @user / @invite / @count)
-// เมื่อมีสมาชิกใหม่เข้ามา จะตรวจว่ามาจากลิงก์ของใคร แล้วส่ง Embed ตามเทมเพลตในห้องที่ตั้งไว้
-
 const {
   SlashCommandBuilder,
   EmbedBuilder,
@@ -12,14 +8,12 @@ const {
   Events,
   PermissionsBitField,
 } = require("discord.js");
-const { db, admin } = require("./firebase"); // ต้องมีไฟล์ firebase.js export { db, admin }
+const { db, admin } = require("./firebase");
 
-const CONFIG_COL = "inviteTrackers"; // guildId -> { channelId, titleTpl, descTpl, updatedAt }
-const LOGS_SUB   = "inviteLogs";     // เก็บประวัติการเชิญ (ออปชัน)
-const STATS_SUB  = "inviteStats";    // เก็บจำนวนเชิญต่อคน (ออปชัน)
+const CONFIG_COL = "inviteTrackers";
+const LOGS_SUB   = "inviteLogs";
+const STATS_SUB  = "inviteStats";
 
-// ---- แคชค่า invites ต่อกิลด์ ----
-// Map<guildId, Map<codeOrSpecial, { uses:number, inviterId?:string|null, kind:'normal'|'vanity' }>>
 const invitesCache = new Map();
 const VANITY_KEY = "__VANITY__";
 

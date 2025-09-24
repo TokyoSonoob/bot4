@@ -1,4 +1,4 @@
-
+// move.js — compatible with hardened ticket.js style
 const {
   Events,
   PermissionsBitField,
@@ -7,120 +7,166 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ChannelSelectMenuBuilder,
-  ComponentType,
+  ChannelType,
+  MessageFlags,
 } = require("discord.js");
 
-module.exports = function (client) {
-  const CATEGORY_MAX_CHANNELS = 50;
-  const session = new Map();
-  function isCategory(ch) { return ch?.type === 4; }
-  function isTextLike(ch) { return ch?.type === 0 || ch?.type === 5; }
-  function childrenOf(guild, categoryId) {
-    return guild.channels.cache
-      .filter(ch => ch.parentId === categoryId && isTextLike(ch))
-      .sort((a, b) => (a.rawPosition ?? a.position) - (b.rawPosition ?? b.position))
-      .toJSON();
-  }
-  function countChildren(guild, categoryId) { return childrenOf(guild, categoryId).length; }
+// ===== CONFIG =====
+const CATEGORY_MAX_CHANNELS = 50;
+const session = new Map();
 
-  async function moveFromToUntil(guild, fromId, toId) {
-    let moved = 0;
-    while (true) {
-      const fromChildren = childrenOf(guild, fromId);
-      const toCount = countChildren(guild, toId);
-      if (fromChildren.length === 0) break;
-      if (toCount >= CATEGORY_MAX_CHANNELS) break;
+// ===== Helpers =====
+function isAdmin(interaction) {
+  return interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator);
+}
+function isCategory(ch) {
+  return ch?.type === ChannelType.GuildCategory;
+}
+function isTextLike(ch) {
+  return ch?.type === ChannelType.GuildText || ch?.type === ChannelType.GuildAnnouncement;
+}
+function childrenOf(guild, categoryId) {
+  return guild.channels.cache
+    .filter((ch) => ch.parentId === categoryId && isTextLike(ch))
+    .sort((a, b) => (a.rawPosition ?? a.position) - (b.rawPosition ?? b.position))
+    .toJSON();
+}
+function countChildren(guild, categoryId) {
+  return childrenOf(guild, categoryId).length;
+}
+async function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-      const top = fromChildren[0];
-      try {
-        await top.setParent(toId, { lockPermissions: false });
-        moved++;
-      } catch (e) {
-        break;
-      }
-      await new Promise(r => setTimeout(r, 400));
+/** reply แบบ ephemeral ตามสไตล์ hardened */
+async function safeReply(interaction, options) {
+  const payload = { ...options };
+  try {
+    if (payload.ephemeral) delete payload.ephemeral;
+    payload.flags = MessageFlags.Ephemeral;
+    if (interaction.deferred || interaction.replied) return interaction.followUp(payload);
+    return interaction.reply(payload);
+  } catch (e) {
+    try {
+      const alt = { ...options, ephemeral: true };
+      if (interaction.deferred || interaction.replied) return interaction.followUp(alt);
+      return interaction.reply(alt);
+    } catch (_) {
+      console.error("safeReply error:", e);
     }
-    return moved;
   }
+}
 
-  function buildMoveEmbed(sel) {
-    const from = sel?.fromCatId ? `<#${sel.fromCatId}>` : "—";
-    const to   = sel?.toCatId   ? `<#${sel.toCatId}>`   : "—";
-    return new EmbedBuilder()
-      .setTitle("ย้ายห้อง")
-      .setDescription([
-        `**ต้นทาง : ${from}**`,
-        `**ปลายทาง : ${to}**`,
-      ].join("\n"))
-      .setColor(0x8a2be2);
-  }
+function buildMoveEmbed(sel) {
+  const from = sel?.fromCatId ? `<#${sel.fromCatId}>` : "—";
+  const to = sel?.toCatId ? `<#${sel.toCatId}>` : "—";
+  return new EmbedBuilder()
+    .setTitle("ย้ายห้อง")
+    .setDescription([`**ต้นทาง:** ${from}`, `**ปลายทาง:** ${to}`].join("\n"))
+    .setColor(0x8a2be2);
+}
 
-  function buildSelectors() {
-    const row1 = new ActionRowBuilder().addComponents(
-      new ChannelSelectMenuBuilder()
-        .setCustomId("move_select_from")
-        .setPlaceholder("เลือกต้นทาง")
-        .addChannelTypes(4)
-        .setMinValues(1)
-        .setMaxValues(1)
-    );
-    const row2 = new ActionRowBuilder().addComponents(
-      new ChannelSelectMenuBuilder()
-        .setCustomId("move_select_to")
-        .setPlaceholder("เลือกปลายทาง")
-        .addChannelTypes(4)
-        .setMinValues(1)
-        .setMaxValues(1)
-    );
-    const row3 = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("move_start")
-        .setLabel("เริ่มย้าย")
-        .setStyle(ButtonStyle.Primary)
-    );
-    return [row1, row2, row3];
+function buildSelectors() {
+  const row1 = new ActionRowBuilder().addComponents(
+    new ChannelSelectMenuBuilder()
+      .setCustomId("move_select_from")
+      .setPlaceholder("เลือกหมวดหมู่ต้นทาง")
+      .addChannelTypes(ChannelType.GuildCategory)
+      .setMinValues(1)
+      .setMaxValues(1)
+  );
+  const row2 = new ActionRowBuilder().addComponents(
+    new ChannelSelectMenuBuilder()
+      .setCustomId("move_select_to")
+      .setPlaceholder("เลือกหมวดหมู่ปลายทาง")
+      .addChannelTypes(ChannelType.GuildCategory)
+      .setMinValues(1)
+      .setMaxValues(1)
+  );
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("move_start").setLabel("เริ่มย้าย").setStyle(ButtonStyle.Primary)
+  );
+  return [row1, row2, row3];
+}
+
+/** พยายามกู้ state จากข้อความเดิม ถ้า session หาย (ไม่เตือน /move ก่อน) */
+function recoverStateFromMessage(msg) {
+  const sel = { fromCatId: null, toCatId: null };
+  const emb = msg?.embeds?.[0];
+  const desc = emb?.description || "";
+  // หา pattern <#1234567890>
+  const matches = [...desc.matchAll(/<#[0-9]+>/g)].map((m) => m[0].slice(2, -1));
+  // โดย buildMoveEmbed วาง **ต้นทาง** ขึ้นก่อนตามด้วย **ปลายทาง**
+  if (matches[0]) sel.fromCatId = matches[0];
+  if (matches[1]) sel.toCatId = matches[1];
+  if (!sel.fromCatId && !sel.toCatId) return null;
+  return sel;
+}
+
+async function moveFromToUntil(guild, fromId, toId) {
+  let moved = 0;
+  while (true) {
+    const fromChildren = childrenOf(guild, fromId);
+    const toCount = countChildren(guild, toId);
+    if (fromChildren.length === 0) break;
+    if (toCount >= CATEGORY_MAX_CHANNELS) break;
+
+    const top = fromChildren[0];
+    try {
+      await top.setParent(toId, { lockPermissions: false });
+      moved++;
+    } catch (e) {
+      break; // สิทธิ์/ลิมิต/ฯลฯ
+    }
+    await wait(400); // ผ่อน rate limit
   }
+  return moved;
+}
+
+module.exports = function (client) {
+  // ===== Register /move (global) =====
   client.once(Events.ClientReady, async () => {
     try {
-      const guild = client.guilds.cache.first();
-      if (!guild) return;
-      const existing = await guild.commands.fetch().catch(() => null);
-      const dup = existing?.find(c => c.name === "moveroom");
-      if (dup) await guild.commands.delete(dup.id).catch(() => {});
-
-      await guild.commands.create({
+      await client.application.commands.create({
         name: "move",
-        description: "ย้ายห้อง",
+        description:
+          "ย้ายห้องจากหมวดหมู่หนึ่งไปอีกหมวด (ย้ายทีละห้องจากบนลงล่าง จนกว่าปลายทางจะเต็ม)",
+        default_member_permissions: String(PermissionsBitField.Flags.Administrator),
+        dm_permission: false,
       });
-      // eslint-disable-next-line no-console
       console.log("✅ Registered /move");
     } catch (e) {
       console.error("register /move failed:", e?.message || e);
     }
   });
 
+  // ===== Interactions =====
   client.on(Events.InteractionCreate, async (interaction) => {
     try {
-      if (interaction.isChatInputCommand && interaction.isChatInputCommand() && interaction.commandName === "move") {
-        if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
-          return interaction.reply({ content: "❌ คำสั่งนี้ใช้ได้เฉพาะแอดมิน", ephemeral: true });
+      // /move
+      if (interaction.isChatInputCommand?.() && interaction.commandName === "move") {
+        if (!isAdmin(interaction)) {
+          return safeReply(interaction, { content: "❌ คำสั่งนี้ใช้ได้เฉพาะแอดมิน" });
         }
         const uid = interaction.user.id;
         session.set(uid, { fromCatId: null, toCatId: null });
 
-        await interaction.reply({
+        return safeReply(interaction, {
           embeds: [buildMoveEmbed(session.get(uid))],
           components: buildSelectors(),
-          ephemeral: true,
         });
-        return;
       }
 
+      // เลือกหมวดหมู่ (from/to)
       if (interaction.isChannelSelectMenu?.()) {
-        const uid = interaction.user.id;
-        if (!session.has(uid)) {
-          return interaction.reply({ content: "⚠️ โปรดเริ่มจาก /move ก่อน", ephemeral: true });
+        if (!isAdmin(interaction)) {
+          return safeReply(interaction, { content: "❌ คำสั่งนี้ใช้ได้เฉพาะแอดมิน" });
         }
+        const uid = interaction.user.id;
+        // ถ้าไม่มี session → กู้จากข้อความเดิม แทนการเตือน
+        if (!session.has(uid)) {
+          const recovered = recoverStateFromMessage(interaction.message);
+          session.set(uid, recovered || { fromCatId: null, toCatId: null });
+        }
+
         const picked = interaction.values?.[0];
         const cur = session.get(uid) || {};
         if (interaction.customId === "move_select_from") {
@@ -129,70 +175,82 @@ module.exports = function (client) {
           cur.toCatId = picked;
         }
         session.set(uid, cur);
-        await interaction.update({
+        return interaction.update({
           embeds: [buildMoveEmbed(cur)],
           components: buildSelectors(),
         });
-        return;
       }
 
       // เริ่มย้าย
-      if (interaction.isButton && interaction.isButton() && interaction.customId === "move_start") {
-        // เช็คสิทธิ์
-        if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
-          return interaction.reply({ content: "❌ คำสั่งนี้ใช้ได้เฉพาะแอดมิน", ephemeral: true });
+      if (interaction.isButton?.() && interaction.customId === "move_start") {
+        if (!isAdmin(interaction)) {
+          return safeReply(interaction, { content: "❌ คำสั่งนี้ใช้ได้เฉพาะแอดมิน" });
         }
         const uid = interaction.user.id;
-        const sel = session.get(uid);
-        if (!sel?.fromCatId || !sel?.toCatId) {
-          return interaction.reply({ content: "⚠️ กรุณาเลือกหมวดหมู่ทั้ง 2 ช่องให้ครบก่อน", ephemeral: true });
+
+        // ถ้าไม่มี session → กู้จากข้อความเดิม (ไม่เตือน)
+        if (!session.has(uid)) {
+          const recovered = recoverStateFromMessage(interaction.message);
+          if (recovered) session.set(uid, recovered);
         }
-        if (sel.fromCatId === sel.toCatId) {
-          return interaction.reply({ content: "⚠️ หมวดหมู่ต้นทางและปลายทางต้องไม่ใช่อันเดียวกัน", ephemeral: true });
+        const sel = session.get(uid);
+
+        // ถ้ากู้ไม่ได้จริงๆ ก็เงียบๆ (ไม่เด้ง “/move ก่อน”)
+        if (!sel?.fromCatId || !sel?.toCatId || sel.fromCatId === sel.toCatId) {
+          // อัปเดต embed ให้เห็นสถานะปัจจุบัน แต่ไม่เตือน
+          if (interaction.isRepliable?.()) {
+            await safeReply(interaction, {
+              content: "⚠️ ยังเลือกต้นทาง/ปลายทางไม่ครบหรือซ้ำกัน",
+            });
+          }
+          return;
         }
 
         const guild = interaction.guild;
         const fromCat = guild.channels.cache.get(sel.fromCatId);
-        const toCat   = guild.channels.cache.get(sel.toCatId);
+        const toCat = guild.channels.cache.get(sel.toCatId);
         if (!isCategory(fromCat) || !isCategory(toCat)) {
-          return interaction.reply({ content: "❌ กรุณาเลือกเป็น **หมวดหมู่ (Category)** เท่านั้น", ephemeral: true });
+          return safeReply(interaction, { content: "❌ กรุณาเลือกเป็น **หมวดหมู่ (Category)** เท่านั้น" });
         }
 
-        // เริ่มงาน
-        await interaction.deferReply({ ephemeral: true });
+        await safeReply(interaction, { content: "⏳ กำลังย้ายห้อง..." });
 
         const beforeFrom = countChildren(guild, fromCat.id);
-        const beforeTo   = countChildren(guild, toCat.id);
+        const beforeTo = countChildren(guild, toCat.id);
 
         const moved = await moveFromToUntil(guild, fromCat.id, toCat.id);
 
         const afterFrom = countChildren(guild, fromCat.id);
-        const afterTo   = countChildren(guild, toCat.id);
+        const afterTo = countChildren(guild, toCat.id);
 
-        await interaction.editReply({
+        await safeReply(interaction, {
           content: [
-            `** เสร็จสิ้น! ย้ายห้องจำนวน ${moved} ห้อง**`,
-            `** ต้นทาง : <#${fromCat.id}> ${beforeFrom} → ${afterFrom} ห้อง`,
-            `** ปลายทาง : <#${toCat.id}> ${beforeTo} → ${afterTo} ห้อง`,
-            (afterFrom === 0 ? "• ต้นทางหมด" : ""),
-            (afterTo >= CATEGORY_MAX_CHANNELS ? `• ปลายทางเต็ม (${CATEGORY_MAX_CHANNELS})` : ""),
-          ].filter(Boolean).join("\n"),
+            `✅ **เสร็จสิ้น: ย้ายแล้ว ${moved} ห้อง**`,
+            `• ต้นทาง: <#${fromCat.id}> — ${beforeFrom} → ${afterFrom}`,
+            `• ปลายทาง: <#${toCat.id}> — ${beforeTo} → ${afterTo}`,
+            afterFrom === 0 ? "• ต้นทางหมด ✅" : "",
+            afterTo >= CATEGORY_MAX_CHANNELS ? `• ปลายทางเต็ม (ลิมิต ${CATEGORY_MAX_CHANNELS})` : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
         });
 
-        // เคลียร์เซสชัน
         session.delete(uid);
         return;
       }
 
-      // กดปุ่ม/มีอินเทอแอคชันอื่นบนเมสเสจนี้ แต่ไม่มีเซสชัน
-      if ((interaction.isButton?.() || interaction.isChannelSelectMenu?.()) && !session.has(interaction.user.id)) {
-        return interaction.reply({ content: "⚠️ โปรดเริ่มจาก /move ก่อน", ephemeral: true });
-      }
+      // ถ้าเป็น interaction อื่นๆ แล้วไม่มี session → เงียบ (ไม่เตือน)
     } catch (err) {
       console.error("move module interaction error:", err);
-      if (interaction?.isRepliable?.() && !interaction.replied && !interaction.deferred) {
-        try { await interaction.reply({ content: "❌ มีข้อผิดพลาดในคำสั่ง /move", ephemeral: true }); } catch {}
-      }
+      try {
+        if (interaction?.isRepliable?.()) {
+          if (interaction.replied || interaction.deferred) {
+            await interaction.followUp({ content: "❌ มีข้อผิดพลาดในคำสั่ง /move", flags: MessageFlags.Ephemeral });
+          } else {
+            await interaction.reply({ content: "❌ มีข้อผิดพลาดในคำสั่ง /move", ephemeral: true });
+          }
+        }
+      } catch {}
     }
   });
 };

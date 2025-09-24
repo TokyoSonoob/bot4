@@ -65,7 +65,7 @@ module.exports = (client) => {
       await client.application.commands.create(
         new SlashCommandBuilder()
           .setName("sound")
-          .setDescription("เลือกหมวดหมู่ แล้วกรอกชื่อเพื่อสร้างห้องเสียง (Voice) ในนั้น")
+          .setDescription("สร้างห้องเสียง")
           .setDMPermission(false)
           .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels)
           .toJSON()

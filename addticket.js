@@ -281,7 +281,7 @@ module.exports = (client) => {
       await client.application.commands.create(
         new SlashCommandBuilder()
           .setName("addticket")
-          .setDescription("เพิ่มปุ่ม ticket ให้ embed เดิม; ถ้าเต็มจะสร้างข้อความปุ่มล้วนด้านล่าง (รวมไม่เกิน 25)")
+          .setDescription("เพิ่มปุ่ม ticket")
           .setDMPermission(false)
           .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
           .toJSON()

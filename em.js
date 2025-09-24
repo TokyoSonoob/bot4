@@ -20,9 +20,7 @@ module.exports = (client) => {
     INPUT_COLOR: "em_color",
   };
 
-  const DEFAULT_COLOR_INT = 0x9b59b6; // #9b59b6
-
-  // helper: parse hex color into int (supports #fff, #ffffff, 0xrrggbb)
+  const DEFAULT_COLOR_INT = 0x9b59b6;
   function parseHexColorToInt(input) {
     if (!input) return null;
     let s = String(input).trim().toLowerCase();
@@ -72,7 +70,7 @@ module.exports = (client) => {
       await client.application.commands.create(
         new SlashCommandBuilder()
           .setName("em")
-          .setDescription("เปิดฟอร์มส่ง Embed (title/description/URL รูปภาพ/สี)")
+          .setDescription("ส่ง Embed")
           .setDMPermission(false)
           .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator) // ✅ limit at registry
           .toJSON()

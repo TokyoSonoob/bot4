@@ -11,8 +11,6 @@ const {
   PermissionsBitField,
   MessageFlags,
 } = require("discord.js");
-
-/** ตอบแบบ ephemeral โดยใช้ flags พร้อม fallback */
 async function safeReply(interaction, options) {
   const payload = { ...options };
   try {
@@ -56,7 +54,7 @@ module.exports = (client) => {
           .setName("room")
           .setDescription("เลือกหมวดหมู่")
           .setDMPermission(false)
-          .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator) // ✅ แอดมินเท่านั้น
+          .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
           .toJSON()
       );
       console.log("✅ Registered /room");
@@ -83,7 +81,7 @@ module.exports = (client) => {
       .sort((a, b) => a.rawPosition - b.rawPosition);
 
     if (categories.length === 0) {
-      return safeReply(interaction, { content: "⚠️ เซิร์ฟเวอร์นี้ยังไม่มีหมวดหมู่ (Category) เลย" });
+      return safeReply(interaction, { content: "**เซิร์ฟเวอร์นี้ยังไม่มีหมวดหมู่เลย ไปสร้างก่อนไป๊**" });
     }
 
     const limited = categories.slice(0, 25);
@@ -96,7 +94,7 @@ module.exports = (client) => {
     await safeReply(interaction, {
       content:
         categories.length > 25
-          ? `กรุณาเลือกหมวดหมู่ (แสดงได้สูงสุด 25 รายการจากทั้งหมด ${categories.length})`
+          ? `กรุณาเลือกหมวดหมู่ (แสดงสูงสุด 25 จากทั้งหมด ${categories.length})`
           : "กรุณาเลือกหมวดหมู่",
       components: [row],
     });
@@ -127,17 +125,17 @@ module.exports = (client) => {
 
     const namesInput = new TextInputBuilder()
       .setCustomId(IDS.INPUT_NAMES)
-      .setLabel("ชื่อห้อง")
-      .setPlaceholder("ตัวอย่าง : \nทั่วไป\nพูดคุย\nซื้อขาย")
+      .setLabel("ชื่อห้อง (ขึ้นบรรทัดใหม่แยกแต่ละห้อง)")
+      .setPlaceholder("ตัวอย่าง :\nห้องกินข้าว\nห้องน้ำ\nปลาเค็ม\nเริ่มหิวละ")
       .setStyle(TextInputStyle.Paragraph)
       .setRequired(true)
-      .setMaxLength(1000);
+      .setMaxLength(2000);
 
     modal.addComponents(new ActionRowBuilder().addComponents(namesInput));
     await interaction.showModal(modal);
   });
 
-  // 4) Modal Submit → สร้างห้อง (Text) ใต้ Category
+  // 4) Modal Submit → สร้างห้อง (Text) ใต้ Category (อนุญาตชื่อซ้ำ)
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isModalSubmit()) return;
     if (!interaction.customId.startsWith(IDS.MODAL_PREFIX + ":")) return;
@@ -159,37 +157,18 @@ module.exports = (client) => {
     }
 
     const raw = interaction.fields.getTextInputValue(IDS.INPUT_NAMES) || "";
-    let names = raw.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    // ถ้ามีขึ้นบรรทัดใหม่ → ใช้บรรทัดเป็นตัวคั่น; ถ้าไม่มี → คั่นด้วยช่องว่าง
+    const parts = raw.includes("\n") ? raw.split(/\r?\n/) : raw.split(/\s+/);
+
+    let names = parts.map((s) => s.trim()).filter(Boolean).slice(0, MAX_CREATE);
 
     if (names.length === 0) {
-      return interaction.editReply({ content: "⚠️ กรุณาระบุชื่ออย่างน้อย 1 ชื่อ" });
+      return interaction.editReply({ content: "**กรุณาระบุชื่ออย่างน้อย 1 ชื่อ**" });
     }
-
-    // unique + จำกัดจำนวน
-    const seen = new Set();
-    names = names
-      .filter((n) => {
-        const k = n.toLowerCase();
-        if (seen.has(k)) return false;
-        seen.add(k);
-        return true;
-      })
-      .slice(0, MAX_CREATE);
-
-    const existingInCategory = new Set(
-      interaction.guild.channels.cache
-        .filter((ch) => ch.parentId === category.id && ch.type === ChannelType.GuildText)
-        .map((ch) => ch.name.toLowerCase())
-    );
 
     const results = [];
     for (const nameRaw of names) {
       const name = nameRaw.slice(0, 100);
-      if (existingInCategory.has(name.toLowerCase())) {
-        results.push(`• มีอยู่แล้วในหมวดนี้: **${name}**`);
-        continue;
-      }
-
       try {
         const created = await interaction.guild.channels.create({
           name,
@@ -198,16 +177,15 @@ module.exports = (client) => {
           reason: `Created by ${interaction.user.tag} in ${category.name}`,
         });
         results.push(`• ✅ **${created.name}**`);
-        existingInCategory.add(created.name.toLowerCase());
       } catch (e) {
         console.error("create text channel error:", e);
-        results.push(`• ❌ ล้มเหลว: **${name}** (สิทธิ์ไม่พอหรือชื่อไม่ถูกต้อง)`);
+        results.push(`• ❌ ล้มเหลว: **${name}**`);
       }
     }
 
     const summary = [
-      `หมวดหมู่: **${category.name}**`,
-      `สรุปการสร้างห้อง: **${results.filter((r) => r.includes("✅")).length}/${names.length}** สำเร็จ`,
+      `**หมวดหมู่ : ${category.name}**`,
+      `**สร้างห้อง : ${results.filter((r) => r.includes("")).length}/${names.length} สำเร็จ**`,
       ...results,
     ]
       .join("\n")

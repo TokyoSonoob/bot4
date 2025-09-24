@@ -56,6 +56,44 @@ module.exports = (client) => {
     BTN_ROOMS_CANCEL: "delete_rooms_cancel",
   };
 
+  // ===== Helpers =====
+  function labelByType(t) {
+    switch (t) {
+      case ChannelType.GuildText: return "ข้อความ";
+      case ChannelType.GuildVoice: return "เสียง";
+      case ChannelType.GuildAnnouncement: return "ประกาศ";
+      case ChannelType.GuildForum: return "ฟอรั่ม";
+      case ChannelType.GuildStageVoice: return "สเตจ";
+      default: return "ห้อง";
+    }
+  }
+
+  /** คืนรายการห้องลูกทั้งหมดใต้หมวดหมู่ เรียงตามตำแหน่งจริง */
+  function childrenOfCategorySorted(guild, categoryId) {
+    return [...guild.channels.cache.values()]
+      .filter((ch) => ch.parentId === categoryId && ch.type !== ChannelType.GuildCategory)
+      .sort((a, b) => a.rawPosition - b.rawPosition);
+  }
+
+  /** ลบห้องลูกทั้งหมดใต้หมวดหมู่ (อย่างปลอดภัย ทีละห้อง) */
+  async function deleteChildrenOfCategory(interaction, category) {
+    const children = childrenOfCategorySorted(interaction.guild, category.id);
+    const perRoomResults = [];
+    let ok = 0;
+
+    for (const ch of children) {
+      try {
+        await ch.delete(`Deleted by ${interaction.user.tag} (inside ${category.name})`);
+        perRoomResults.push(`   • ✅ ลบ${labelByType(ch.type)}: **${ch.name}**`);
+        ok++;
+      } catch (e) {
+        console.error("delete child channel error:", e);
+        perRoomResults.push(`   • ❌ ล้มเหลว: **${ch?.name ?? ch.id}**`);
+      }
+    }
+    return { ok, total: children.length, lines: perRoomResults };
+  }
+
   // 1) ลงทะเบียน /delete group|room
   client.once(Events.ClientReady, async () => {
     try {
@@ -63,7 +101,7 @@ module.exports = (client) => {
         new SlashCommandBuilder()
           .setName("delete")
           .setDescription("ลบหมวดหมู่หรือห้อง")
-          .addSubcommand((sc) => sc.setName("group").setDescription("ลบหมวดหมู่"))
+          .addSubcommand((sc) => sc.setName("group").setDescription("ลบหมวดหมู่ (จะลบห้องข้างในก่อนอัตโนมัติ)"))
           .addSubcommand((sc) => sc.setName("room").setDescription("ลบห้อง"))
           .setDMPermission(false)
           .toJSON()
@@ -111,8 +149,8 @@ module.exports = (client) => {
       await safeReply(interaction, {
         content:
           categoriesAll.length > 25
-            ? `เลือกหมวดหมู่ที่จะลบ (แสดงได้สูงสุด 25 จากทั้งหมด ${categoriesAll.length}) แล้วกด **ยืนยัน**`
-            : "เลือกหมวดหมู่ที่จะลบ แล้วกด **ยืนยัน**",
+            ? `เลือกหมวดหมู่ที่จะลบ`
+            : "เลือกหมวดหมู่ที่จะลบ",
         components: [row],
       });
     }
@@ -140,8 +178,8 @@ module.exports = (client) => {
       await safeReply(interaction, {
         content:
           categoriesAll.length > 25
-            ? `เลือกหมวดหมู่ที่จะลบ **ห้อง** (แสดงได้สูงสุด 25 จากทั้งหมด ${categoriesAll.length})`
-            : "เลือกหมวดหมู่ที่จะลบ **ห้อง** ข้างใน",
+            ? `เลือกหมวดหมู่ที่จะลบ`
+            : "เลือกหมวดหมู่ที่จะลบ",
         components: [row],
       });
     }
@@ -167,7 +205,7 @@ module.exports = (client) => {
       const confirm = new ButtonBuilder()
         .setCustomId(IDS.BTN_GROUP_CONFIRM)
         .setStyle(ButtonStyle.Danger)
-        .setLabel("ลบหมวดหมู่");
+        .setLabel("ลบหมวดหมู่ (รวมลบห้องข้างใน)");
       const cancel = new ButtonBuilder()
         .setCustomId(IDS.BTN_GROUP_CANCEL)
         .setStyle(ButtonStyle.Secondary)
@@ -182,7 +220,7 @@ module.exports = (client) => {
 
       await safeReply(interaction, {
         content:
-          `หมวดหมู่ที่จะลบ:\n${names}\n\nโปรดกดยืนยันเพื่อลบ`,
+          `**หมวดหมู่ที่จะลบ\nโปรดกดยืนยันเพื่อลบ**`,
         components: [row],
       });
     }
@@ -200,9 +238,7 @@ module.exports = (client) => {
       }
 
       // ✅ เรียงห้องลูกตามตำแหน่งจริงใต้หมวดนั้น
-      const childrenAll = [...interaction.guild.channels.cache.values()]
-        .filter((ch) => ch.parentId === category.id && ch.type !== ChannelType.GuildCategory)
-        .sort((a, b) => a.rawPosition - b.rawPosition);
+      const childrenAll = childrenOfCategorySorted(interaction.guild, category.id);
 
       if (childrenAll.length === 0) {
         return safeReply(interaction, { content: `หมวดหมู่ **${category.name}** ไม่มีห้องให้ลบ` });
@@ -279,7 +315,7 @@ module.exports = (client) => {
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isButton()) return;
 
-    // --- GROUP CONFIRM ---
+    // --- GROUP CONFIRM (ลบห้องลูกทั้งหมดก่อน แล้วค่อยลบหมวดหมู่) ---
     if (interaction.customId === IDS.BTN_GROUP_CONFIRM) {
       if (!allowedUsers.includes(interaction.user.id)) {
         return safeReply(interaction, { content: "❌ คุณไม่มีสิทธิ์" });
@@ -299,23 +335,36 @@ module.exports = (client) => {
       }
 
       const results = [];
+      let okCats = 0;
+
       for (const id of ids) {
         const cat = interaction.guild.channels.cache.get(id);
         if (!cat || cat.type !== ChannelType.GuildCategory) {
           results.push(`• ❌ ไม่พบ/ไม่ใช่หมวดหมู่: \`${id}\``);
           continue;
         }
+
+        // 1) ลบห้องลูกทั้งหมดก่อน
+        const childSummary = await deleteChildrenOfCategory(interaction, cat);
+        const childHeader = `**ลบห้องสำเร็จ**`;
+        results.push(childHeader, ...childSummary.lines);
+
+        // 2) ค่อยลบหมวดหมู่
         try {
-          await cat.delete(`Deleted by ${interaction.user.tag}`);
+          await cat.delete(`Deleted by ${interaction.user.tag} (after clearing children)`);
           results.push(`• ✅ ลบหมวดหมู่: **${cat.name}**`);
+          okCats++;
         } catch (e) {
           console.error("delete category error:", e);
           results.push(`• ❌ ล้มเหลว: **${cat.name}**`);
         }
+
+        // กัน rate limit หน่อย
+        await new Promise((r) => setTimeout(r, 300));
       }
 
       const summary = [
-        `🗑️ สรุปการลบหมวดหมู่: **${results.filter((r) => r.includes("✅")).length}/${ids.length}** สำเร็จ`,
+        `**ลบหมวดหมู่สำเร็จ**`,
         ...results,
       ]
         .join("\n")
@@ -348,6 +397,8 @@ module.exports = (client) => {
       }
 
       const results = [];
+      let okRooms = 0;
+
       for (const id of data.channelIds) {
         const ch = interaction.guild.channels.cache.get(id);
         if (!ch || ch.type === ChannelType.GuildCategory) {
@@ -356,15 +407,17 @@ module.exports = (client) => {
         }
         try {
           await ch.delete(`Deleted by ${interaction.user.tag}`);
-          results.push(`• ✅ ลบห้อง: **${ch.name}**`);
+          results.push(`• ✅ ลบ${labelByType(ch.type)}: **${ch.name}**`);
+          okRooms++;
         } catch (e) {
           console.error("delete channel error:", e);
           results.push(`• ❌ ล้มเหลว: **${ch?.name ?? id}**`);
         }
+        await new Promise((r) => setTimeout(r, 150));
       }
 
       const summary = [
-        `🗑️ สรุปการลบห้อง: **${results.filter((r) => r.includes("✅")).length}/${data.channelIds.length}** สำเร็จ`,
+        `🗑️ สรุปการลบห้อง: **${okRooms}/${data.channelIds.length}** สำเร็จ`,
         ...results,
       ]
         .join("\n")
@@ -378,15 +431,4 @@ module.exports = (client) => {
       return safeReply(interaction, { content: "ยกเลิกการลบห้องแล้ว" });
     }
   });
-
-  function labelByType(t) {
-    switch (t) {
-      case ChannelType.GuildText: return "ข้อความ";
-      case ChannelType.GuildVoice: return "เสียง";
-      case ChannelType.GuildAnnouncement: return "ประกาศ";
-      case ChannelType.GuildForum: return "ฟอรั่ม";
-      case ChannelType.GuildStageVoice: return "สเตจ";
-      default: return "ห้อง";
-    }
-  }
 };

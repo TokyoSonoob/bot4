@@ -1,4 +1,6 @@
-// ticket.js
+// ticket.js (hardened build)
+// ปรับเสถียรภาพ + แก้บั๊ก permissionOverwrites + ตรวจ category/URL + ครอบ try/catch
+
 const {
   SlashCommandBuilder,
   EmbedBuilder,
@@ -42,6 +44,23 @@ function isAdmin(interaction) {
   return interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator);
 }
 
+// --- PATCH: utils เพิ่มเติม
+function looksLikeHttpUrl(s = "") {
+  return /^https?:\/\/.+/i.test(s);
+}
+
+async function getCategory(guild, categoryId) {
+  if (!categoryId) return null;
+  try {
+    const ch = await guild.channels.fetch(categoryId).catch(() => null);
+    if (!ch) return null;
+    if (ch.type !== ChannelType.GuildCategory) return null;
+    return ch;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = (client) => {
   // ===== 1) ลงทะเบียน /ticket (เฉพาะแอดมิน) =====
   client.once(Events.ClientReady, async () => {
@@ -49,7 +68,7 @@ module.exports = (client) => {
       await client.application.commands.create(
         new SlashCommandBuilder()
           .setName("ticket")
-          .setDescription("สร้างชุดตั๋ว (สองหน้า) และโพสต์ปุ่มเปิดห้อง")
+          .setDescription("สร้างตั๋ว")
           .setDMPermission(false)
           .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator) // ✅ แอดมินเท่านั้น
           .toJSON()
@@ -71,7 +90,7 @@ module.exports = (client) => {
 
     const modal1 = new ModalBuilder()
       .setCustomId("ticket_modal_page1")
-      .setTitle("ตั้งค่า Ticket — หน้า 1"); // <= ไม่เกิน 45 ตัว
+      .setTitle("ตั้งค่า Ticket — หน้า 1");
 
     const in_title = new TextInputBuilder()
       .setCustomId("p1_title")
@@ -143,6 +162,15 @@ module.exports = (client) => {
       buttonLabel: interaction.fields.getTextInputValue("p1_button_label").trim(),
       categoryId: interaction.fields.getTextInputValue("p1_category_id").trim(),
     };
+
+    // --- PATCH: ตรวจก่อนว่า category มีจริงไหม (กันพิมพ์ผิดแล้วไปต่อไม่ได้ตอนสร้างห้อง)
+    const catOk = await getCategory(guild, p1.categoryId);
+    if (!catOk) {
+      return safeReply(interaction, {
+        content: "❌ ไม่พบหมวดหมู่ตาม ID นี้ หรือ ID ไม่ใช่หมวดหมู่ (Category). กรุณาตรวจสอบอีกครั้ง",
+        ephemeral: true,
+      });
+    }
 
     // เก็บสถานะ wizard ชั่วคราว
     const sessionId = `${guild.id}_${userId}_${Date.now()}`;
@@ -270,7 +298,7 @@ module.exports = (client) => {
       .setColor(0x7c3aed)
       .setFooter({ text: "Make by Purple Shop" })
       .setTimestamp();
-    if (p1.url && /^https?:\/\//i.test(p1.url)) hostEmbed.setImage(p1.url);
+    if (p1.url && looksLikeHttpUrl(p1.url)) hostEmbed.setImage(p1.url);
 
     // บันทึก config ใหม่: ticket_configs/<guildId>/configs/<autoId>
     const cfgRef = db.collection("ticket_configs").doc(guild.id).collection("configs").doc();
@@ -307,7 +335,7 @@ module.exports = (client) => {
     // ล้าง wizard ชั่วคราว (option)
     await db.collection("ticket_wizard").doc(sessionId).delete().catch(() => {});
 
-    await safeReply(interaction, { content: "✅ สร้างชุดตั๋วสำเร็จ และโพสต์ปุ่มแล้ว", ephemeral: true });
+    await safeReply(interaction, { content: "**สร้างชุดสำเร็จ**", ephemeral: true });
   });
 
   // ===== 6) คลิกปุ่ม "เปิดตั๋ว" → สร้างห้อง + ส่งหน้า 2 + นับ increment =====
@@ -333,7 +361,7 @@ module.exports = (client) => {
       }
     } catch {}
 
-    // เพิ่มตัวนับ
+    // เพิ่มตัวนับ (อ่านค่าล่าสุดหลังอัปเดต)
     await cfgRef.update({
       count: admin.firestore.FieldValue.increment(1),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -344,44 +372,62 @@ module.exports = (client) => {
     // ตั้งชื่อห้อง
     const roomName = `${cfg.page2.roomNamePrefix}${count}`;
 
-    // สร้างห้อง
-    const parentId = cfg.categoryId;
-    const created = await guild.channels.create({
-      name: roomName,
-      type: ChannelType.GuildText,
-      parent: parentId || undefined,
-      permissionOverwrites: [
-        {
-          id: guild.roles.everyone,
-          deny: [
-            PermissionsBitField.Flags.ViewChannel,
-            PermissionsBitField.Flags.SendMessages,
-            PermissionsBitField.Flags.ReadMessageHistory,
-          ],
-        },
-        {
-          id: interaction.user.id,
-          allow: [
-            PermissionsBitField.Flags.ViewChannel,
-            PermissionsBitField.Flags.SendMessages,
-            PermissionsBitField.Flags.ReadMessageHistory,
-            PermissionsBitField.Flags.AttachFiles,
-            PermissionsBitField.Flags.EmbedLinks,
-          ],
-        },
-        {
-          id: guild.members.me.id,
-          allow: [
-            PermissionsBitField.Flags.ViewChannel,
-            PermissionsBitField.Flags.SendMessages,
-            PermissionsBitField.Flags.ReadMessageHistory,
-            PermissionsBitField.Flags.ManageChannels,
-            PermissionsBitField.Flags.EmbedLinks,
-            PermissionsBitField.Flags.AttachFiles,
-          ],
-        },
-      ],
-    });
+    // --- PATCH: ตรวจ category อีกครั้ง ณ เวลาจริง
+    const parentCategory = await getCategory(guild, cfg.categoryId);
+    if (!parentCategory) {
+      return safeReply(interaction, {
+        content: "❌ หมวดหมู่ปลายทางไม่มีอยู่แล้วหรือถูกลบ/ย้าย กรุณาแก้ config",
+        ephemeral: true,
+      });
+    }
+
+    // สร้างห้อง (ครอบ try/catch)
+    let created = null;
+    try {
+      created = await guild.channels.create({
+        name: roomName,
+        type: ChannelType.GuildText,
+        parent: parentCategory.id,
+        permissionOverwrites: [
+          {
+            // --- PATCH: ต้องใช้ .id
+            id: guild.roles.everyone.id,
+            deny: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory,
+            ],
+          },
+          {
+            id: interaction.user.id,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory,
+              PermissionsBitField.Flags.AttachFiles,
+              PermissionsBitField.Flags.EmbedLinks,
+            ],
+          },
+          {
+            id: guild.members.me.id,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory,
+              PermissionsBitField.Flags.ManageChannels,
+              PermissionsBitField.Flags.EmbedLinks,
+              PermissionsBitField.Flags.AttachFiles,
+            ],
+          },
+        ],
+      });
+    } catch (e) {
+      console.error("Create ticket channel failed:", e);
+      return safeReply(interaction, {
+        content: "❌ สร้างห้องไม่สำเร็จ (ตรวจสิทธิ์บอท/หมวดหมู่/ลิมิตเซิร์ฟเวอร์)",
+        ephemeral: true,
+      });
+    }
 
     // Embed หน้า 2
     const e2 = new EmbedBuilder()
@@ -390,7 +436,7 @@ module.exports = (client) => {
       .setColor(0x7c3aed)
       .setFooter({ text: `Make by Purple Shop • Ticket #${count}` })
       .setTimestamp();
-    if (cfg.page2.url && /^https?:\/\//i.test(cfg.page2.url)) e2.setImage(cfg.page2.url);
+    if (cfg.page2.url && looksLikeHttpUrl(cfg.page2.url)) e2.setImage(cfg.page2.url);
 
     // ปุ่มปิดห้อง
     const closeBtn = new ButtonBuilder()
@@ -500,45 +546,57 @@ module.exports = (client) => {
     const count = latest.data().count;
 
     const roomName = `${cfg.page2.roomNamePrefix}${count}`;
-    const parentId = cfg.categoryId;
+
+    // --- PATCH: ตรวจ category ณ เวลาจริง
+    const parentCategory = await getCategory(guild, cfg.categoryId);
+    if (!parentCategory) {
+      return interaction.editReply({ content: "❌ หมวดหมู่ปลายทางไม่มีอยู่แล้วหรือถูกลบ/ย้าย กรุณาแก้ config" });
+    }
 
     // สร้างห้อง
-    const created = await guild.channels.create({
-      name: roomName,
-      type: ChannelType.GuildText,
-      parent: parentId || undefined,
-      permissionOverwrites: [
-        {
-          id: guild.roles.everyone,
-          deny: [
-            PermissionsBitField.Flags.ViewChannel,
-            PermissionsBitField.Flags.SendMessages,
-            PermissionsBitField.Flags.ReadMessageHistory,
-          ],
-        },
-        {
-          id: interaction.user.id,
-          allow: [
-            PermissionsBitField.Flags.ViewChannel,
-            PermissionsBitField.Flags.SendMessages,
-            PermissionsBitField.Flags.ReadMessageHistory,
-            PermissionsBitField.Flags.AttachFiles,
-            PermissionsBitField.Flags.EmbedLinks,
-          ],
-        },
-        {
-          id: guild.members.me.id,
-          allow: [
-            PermissionsBitField.Flags.ViewChannel,
-            PermissionsBitField.Flags.SendMessages,
-            PermissionsBitField.Flags.ReadMessageHistory,
-            PermissionsBitField.Flags.ManageChannels,
-            PermissionsBitField.Flags.EmbedLinks,
-            PermissionsBitField.Flags.AttachFiles,
-          ],
-        },
-      ],
-    });
+    let created = null;
+    try {
+      created = await guild.channels.create({
+        name: roomName,
+        type: ChannelType.GuildText,
+        parent: parentCategory.id,
+        permissionOverwrites: [
+          {
+            // --- PATCH: ต้องใช้ .id
+            id: guild.roles.everyone.id,
+            deny: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory,
+            ],
+          },
+          {
+            id: interaction.user.id,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory,
+              PermissionsBitField.Flags.AttachFiles,
+              PermissionsBitField.Flags.EmbedLinks,
+            ],
+          },
+          {
+            id: guild.members.me.id,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory,
+              PermissionsBitField.Flags.ManageChannels,
+              PermissionsBitField.Flags.EmbedLinks,
+              PermissionsBitField.Flags.AttachFiles,
+            ],
+          },
+        ],
+      });
+    } catch (e) {
+      console.error("Create ticket channel (select) failed:", e);
+      return interaction.editReply({ content: "❌ สร้างห้องไม่สำเร็จ (ตรวจสิทธิ์บอท/หมวดหมู่/ลิมิตเซิร์ฟเวอร์)" });
+    }
 
     // Embed หน้า 2
     const e2 = new EmbedBuilder()
@@ -547,7 +605,7 @@ module.exports = (client) => {
       .setColor(0x7c3aed)
       .setFooter({ text: `Make by Purple Shop • Ticket #${count}` })
       .setTimestamp();
-    if (cfg.page2.url && /^https?:\/\//i.test(cfg.page2.url)) e2.setImage(cfg.page2.url);
+    if (cfg.page2.url && looksLikeHttpUrl(cfg.page2.url)) e2.setImage(cfg.page2.url);
 
     // ปุ่มปิดห้อง
     const closeBtn = new ButtonBuilder()

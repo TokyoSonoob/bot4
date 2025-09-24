@@ -6,7 +6,7 @@ module.exports = (client) => {
     await client.application.commands.create(
       new SlashCommandBuilder()
         .setName("help")
-        .setDescription("แสดงคู่มือแบบย่อ")
+        .setDescription("แสดงคู่มือ")
         .setDMPermission(false)
         .toJSON()
     );
@@ -17,10 +17,10 @@ module.exports = (client) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "help") return;
 
     const embed = new EmbedBuilder()
-      .setColor(0x9b59b6) // สีม่วง (ปรับได้)
+      .setColor(0x9b59b6)
       .setTitle("วิธีการใช้งานบอท")
       .addFields(
-        { name: "/help", value: "ไม่ต้องอธิบายละมั้ง มีสมองนี่", inline: true },
+        { name: "/help", value: "ไม่ต้องอธิบายละมั้ง", inline: true },
         { name: "/welcome", value: "ตามชื่อมันเลย ยินดีต้อนรับ", inline: true },
         { name: "/goodbye", value: "ตามชื่อ ใช้คำสั่งในห้องที่ต้องการ", inline: true },
         { name: "/ticket", value: "บอทสร้างตั๋ว", inline: true },
@@ -35,7 +35,7 @@ module.exports = (client) => {
         { name: "/verify", value: "ใช้ยืนยันตัวตน/รับยศ", inline: true },
         { name: "/private", value: "ใช้เลือกช่องเสียงสำหรับสร้างห้องส่วนตัว", inline: true },
         { name: "/invite", value: "ใช้ในห้องที่ต้องการ ใช้เช็คว่าลิ้งค์คำเชิญของใคร", inline: true },
-        
+        { name: "/move", value: "ย้ายห้องจากหมวดหมู่ไปยังอีกหมวดหมู่ ", inline: true },
       )
       .setFooter({ text: "Make by Purple Shop" })
       .setTimestamp();

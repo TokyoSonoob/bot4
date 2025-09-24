@@ -33,7 +33,7 @@ module.exports = (client) => {
       await client.application.commands.create(
         new SlashCommandBuilder()
           .setName("private")
-          .setDescription("ตั้งค่าห้องเสียงต้นทางเพื่อสร้างห้องส่วนตัวอัตโนมัติ")
+          .setDescription("สร้างห้องส่วนตัวอัตโนมัติ")
           .setDMPermission(false)
           .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator) // ✅ แอดมินเท่านั้น
           .toJSON()
