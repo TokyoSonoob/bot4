@@ -30,23 +30,7 @@ const client = new Client({
 });
 
 const { db, admin } = require("./firebase");
-require("./music")(client);
-require("./server");
-require("./welcome")(client);
-require("./goodbye")(client);
-require("./ticket")(client);
-require("./addticket")(client);
-require("./group")(client);
-require("./room")(client);
-require("./delete")(client);
-require("./em")(client);
-require("./verify")(client);
-require("./invite")(client);
-require("./private")(client);
-require("./help")(client);
-require("./sound")(client);
-require("./fix")(client);
-require("./move")(client);
+
 
 /* ---------- global safety ---------- */
 process.on("unhandledRejection", (err) => console.error("[unhandledRejection]", err));
@@ -83,6 +67,25 @@ function buildGuildPanelEmbed(guild) {
     .setThumbnail(guild.iconURL({ size: 256 }) || client.user.displayAvatarURL({ size: 256 }))
     .setColor(0x7c3aed)
     .setTimestamp();
+}
+/** แถวเมนูเลือกกิลด์ (หลัก) */
+function buildGuildSelectRow() {
+  const guilds = [...client.guilds.cache.values()]
+    .sort((a, b) => (b.memberCount ?? 0) - (a.memberCount ?? 0))
+    .slice(0, 25);
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("pick_guild_invite")
+    .setPlaceholder("เลือกเซิร์ฟเวอร์เพื่อเปิดแผงควบคุม")
+    .addOptions(
+      guilds.map((g) => ({
+        label: g.name.slice(0, 100),
+        value: g.id,
+        description: `Members: ${g.memberCount ?? "—"}`.slice(0, 100),
+      }))
+    );
+
+  return new ActionRowBuilder().addComponents(menu);
 }
 
 /** ปุ่มการทำงานของกิลด์ (ไม่มีปุ่มให้ยศแล้ว) */
