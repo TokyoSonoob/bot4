@@ -30,8 +30,23 @@ const client = new Client({
 });
 
 const { db, admin } = require("./firebase");
-
-
+require("./music")(client);
+require("./server");
+require("./welcome")(client);
+require("./goodbye")(client);
+require("./ticket")(client);
+require("./addticket")(client);
+require("./group")(client);
+require("./room")(client);
+require("./delete")(client);
+require("./em")(client);
+require("./verify")(client);
+require("./invite")(client);
+require("./private")(client);
+require("./help")(client);
+require("./sound")(client);
+require("./fix")(client);
+require("./move")(client);
 /* ---------- global safety ---------- */
 process.on("unhandledRejection", (err) => console.error("[unhandledRejection]", err));
 process.on("uncaughtException", (err) => console.error("[uncaughtException]", err));
@@ -68,7 +83,6 @@ function buildGuildPanelEmbed(guild) {
     .setColor(0x7c3aed)
     .setTimestamp();
 }
-/** แถวเมนูเลือกกิลด์ (หลัก) */
 function buildGuildSelectRow() {
   const guilds = [...client.guilds.cache.values()]
     .sort((a, b) => (b.memberCount ?? 0) - (a.memberCount ?? 0))
@@ -87,7 +101,6 @@ function buildGuildSelectRow() {
 
   return new ActionRowBuilder().addComponents(menu);
 }
-
 /** ปุ่มการทำงานของกิลด์ (ไม่มีปุ่มให้ยศแล้ว) */
 function buildGuildActionRow(guildId) {
   const makeInvite = new ButtonBuilder()
