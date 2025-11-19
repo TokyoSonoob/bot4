@@ -11,28 +11,33 @@ const {
 const { db, admin } = require("./firebase");
 
 const CONFIG_COL = "inviteTrackers";
-const LOGS_SUB   = "inviteLogs";
-const STATS_SUB  = "inviteStats";
+const STATS_SUB = "inviteStats";
 
 const invitesCache = new Map();
+const configCache = new Map();
+
 const VANITY_KEY = "__VANITY__";
 
 function isAdmin(interaction) {
-  return interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator);
+  return interaction.memberPermissions?.has(
+    PermissionsBitField.Flags.Administrator
+  );
 }
 
 function getGuildCache(gid) {
   let m = invitesCache.get(gid);
-  if (!m) { m = new Map(); invitesCache.set(gid, m); }
+  if (!m) {
+    m = new Map();
+    invitesCache.set(gid, m);
+  }
   return m;
 }
 
 async function fetchInvitesMap(guild) {
   const map = new Map();
 
-  // รายการลิงก์เชิญปกติ
   try {
-    const coll = await guild.invites.fetch(); // ต้องการ Manage Guild
+    const coll = await guild.invites.fetch();
     for (const inv of coll.values()) {
       map.set(inv.code, {
         uses: inv.uses ?? 0,
@@ -41,13 +46,15 @@ async function fetchInvitesMap(guild) {
       });
     }
   } catch (e) {
-    console.warn(`[invite] fetch normal invites failed on ${guild.id}:`, e?.message || e);
+    console.warn(
+      `[invite] fetch normal invites failed on ${guild.id}:`,
+      e?.message || e
+    );
   }
 
-  // vanity URL (ถ้ามี)
   try {
     if (guild.vanityURLCode) {
-      const vd = await guild.fetchVanityData(); // { code, uses }
+      const vd = await guild.fetchVanityData();
       map.set(VANITY_KEY, {
         uses: vd?.uses ?? 0,
         inviterId: null,
@@ -68,7 +75,6 @@ async function ensureCachePrimed(guild) {
 }
 
 function diffInvites(oldMap, newMap) {
-  // หาตัวที่ uses เพิ่มขึ้นมากที่สุด
   let best = null;
   let bestDiff = 0;
 
@@ -83,8 +89,9 @@ function diffInvites(oldMap, newMap) {
   }
   if (best) return best;
 
-  // เคสลิงก์วันช็อตถูกใช้แล้วโดนลบ → หายไปจาก newMap
-  const disappeared = [...oldMap.keys()].filter((code) => !newMap.has(code) && code !== VANITY_KEY);
+  const disappeared = [...oldMap.keys()].filter(
+    (code) => !newMap.has(code) && code !== VANITY_KEY
+  );
   if (disappeared.length === 1) {
     const o = oldMap.get(disappeared[0]);
     return {
@@ -101,23 +108,10 @@ function diffInvites(oldMap, newMap) {
 
 function renderTemplate(tpl, { userMention, inviteText, countText }) {
   const s = typeof tpl === "string" ? tpl : "";
-  // แทนค่า: @user, @invite, @count
   return s
     .replaceAll("@user", userMention)
     .replaceAll("@invite", inviteText)
     .replaceAll("@count", countText);
-}
-
-async function saveLogAndBumpStats(guildId, payload) {
-  // payload: { memberId, inviterId, code, uses, type, ts }
-  const guildRef = db.collection(CONFIG_COL).doc(guildId);
-  await guildRef.collection(LOGS_SUB).add(payload).catch(() => {});
-  if (payload.inviterId) {
-    await guildRef.collection(STATS_SUB).doc(payload.inviterId).set({
-      count: admin.firestore.FieldValue.increment(1),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true }).catch(() => {});
-  }
 }
 
 const IDS = {
@@ -126,132 +120,269 @@ const IDS = {
   INPUT_DESC: "invite_desc",
 };
 
+async function getGuildConfig(guildId) {
+  if (configCache.has(guildId)) {
+    return configCache.get(guildId);
+  }
+
+  try {
+    const doc = await db.collection(CONFIG_COL).doc(guildId).get();
+    if (!doc.exists) {
+      configCache.set(guildId, null);
+      return null;
+    }
+    const cfg = doc.data() || null;
+    configCache.set(guildId, cfg);
+    return cfg;
+  } catch (e) {
+    console.error("❌ getGuildConfig error:", e);
+    configCache.set(guildId, null);
+    return null;
+  }
+}
+
+async function bumpInviteStats(guildId, inviterId) {
+  if (!inviterId) return;
+  try {
+    await db
+      .collection(CONFIG_COL)
+      .doc(guildId)
+      .collection(STATS_SUB)
+      .doc(inviterId)
+      .set(
+        {
+          count: admin.firestore.FieldValue.increment(1),
+        },
+        { merge: true }
+      );
+  } catch (_) {}
+}
+
 module.exports = (client) => {
-  // ---------- ลงทะเบียน /invite (เฉพาะแอดมิน) ----------
+  // ====== ลงทะเบียน Slash Commands ======
   client.once(Events.ClientReady, async () => {
     try {
       await client.application.commands.create(
         new SlashCommandBuilder()
           .setName("invite")
-          .setDescription("ตั้งค่า Title/Description สำหรับรายงานคนเข้ามาใหม่ (รองรับ @user/@invite/@count)")
+          .setDescription(
+            "ตั้งค่า Title/Description สำหรับรายงานคนเข้ามาใหม่ (รองรับ @user/@invite/@count)"
+          )
           .setDMPermission(false)
-          .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator) // ✅ แอดมินเท่านั้น
+          .setDefaultMemberPermissions(
+            PermissionsBitField.Flags.Administrator
+          )
           .toJSON()
       );
-      console.log("✅ Registered /invite");
-    } catch (e) {
-      console.error("❌ Register /invite failed:", e);
-    }
 
-    // prime cache สำหรับกิลด์ที่ตั้งค่าไว้แล้ว
-    try {
-      const snap = await db.collection(CONFIG_COL).get();
-      for (const doc of snap.docs) {
-        const guildId = doc.id;
-        const guild = client.guilds.cache.get(guildId);
-        if (guild) ensureCachePrimed(guild).catch(() => {});
-      }
-    } catch (_) {}
-  });
-
-  // ---------- /invite → เปิด Modal ----------
-  client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-    if (interaction.commandName !== "invite") return;
-
-    try {
-      if (!isAdmin(interaction)) {
-        return interaction.reply({ content: "❌ คำสั่งนี้ใช้ได้เฉพาะแอดมิน", ephemeral: true });
-      }
-
-      const me = interaction.guild?.members?.me;
-      if (!me?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
-        return interaction.reply({
-          content: "❌ บอทต้องการสิทธิ์ **Manage Guild** เพื่ออ่าน/ติดตามลิงก์เชิญ",
-          ephemeral: true,
-        });
-      }
-
-      const modal = new ModalBuilder()
-        .setCustomId(IDS.MODAL)
-        .setTitle("ตั้งค่า Invite Message"); // ≤ 45 ตัวอักษร
-
-      const iTitle = new TextInputBuilder()
-        .setCustomId(IDS.INPUT_TITLE)
-        .setLabel("Title")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(256)
-        .setPlaceholder(" ");
-
-      const iDesc = new TextInputBuilder()
-        .setCustomId(IDS.INPUT_DESC)
-        .setLabel("คำอธิบาย (ใช้ @user / @invite / @count)")
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
-        .setMaxLength(4000)
-        .setPlaceholder("@user มาจาก @invite ตอนนี้เชิญทั้งสิ้น @count คน");
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(iTitle),
-        new ActionRowBuilder().addComponents(iDesc),
+      await client.application.commands.create(
+        new SlashCommandBuilder()
+          .setName("topinvite")
+          .setDescription("แสดงอันดับ Top 10 คนเชิญเพื่อนในเซิร์ฟเวอร์นี้")
+          .setDMPermission(false)
+          .toJSON()
       );
 
-      await interaction.showModal(modal);
+      console.log("✅ Registered /invite & /topinvite");
     } catch (e) {
-      console.error("❌ open /invite modal error:", e);
-      if (interaction.isRepliable()) {
-        interaction.reply({ content: "เกิดข้อผิดพลาด", ephemeral: true }).catch(() => {});
+      console.error("❌ Register commands failed:", e);
+    }
+  });
+
+  // ====== Chat Input Commands ======
+  client.on(Events.InteractionCreate, async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    // ----- /invite -----
+    if (interaction.commandName === "invite") {
+      try {
+        if (!isAdmin(interaction)) {
+          return interaction.reply({
+            content: "❌ คำสั่งนี้ใช้ได้เฉพาะแอดมิน",
+            ephemeral: true,
+          });
+        }
+
+        const me = interaction.guild?.members?.me;
+        if (!me?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+          return interaction.reply({
+            content:
+              "❌ บอทต้องการสิทธิ์ **Manage Guild** เพื่ออ่าน/ติดตามลิงก์เชิญ",
+            ephemeral: true,
+          });
+        }
+
+        const modal = new ModalBuilder()
+          .setCustomId(IDS.MODAL)
+          .setTitle("ตั้งค่า Invite Message");
+
+        const iTitle = new TextInputBuilder()
+          .setCustomId(IDS.INPUT_TITLE)
+          .setLabel("Title")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(256)
+          .setPlaceholder(" ");
+
+        const iDesc = new TextInputBuilder()
+          .setCustomId(IDS.INPUT_DESC)
+          .setLabel("คำอธิบาย (ใช้ @user / @invite / @count)")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(4000)
+          .setPlaceholder("@user มาจาก @invite ตอนนี้เชิญทั้งสิ้น @count คน");
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(iTitle),
+          new ActionRowBuilder().addComponents(iDesc)
+        );
+
+        await interaction.showModal(modal);
+      } catch (e) {
+        console.error("❌ open /invite modal error:", e);
+        try {
+          if (!interaction.deferred && !interaction.replied) {
+            await interaction.reply({
+              content: "เกิดข้อผิดพลาด",
+              ephemeral: true,
+            });
+          }
+        } catch (_) {}
+      }
+      return;
+    }
+
+    // ----- /topinvite -----
+    if (interaction.commandName === "topinvite") {
+      try {
+        const guild = interaction.guild;
+        if (!guild) {
+          return interaction.reply({
+            content: "ใช้คำสั่งนี้ในเซิร์ฟเวอร์เท่านั้น",
+            ephemeral: true,
+          });
+        }
+
+        await interaction.deferReply({ ephemeral: false });
+
+        const snap = await db
+          .collection(CONFIG_COL)
+          .doc(guild.id)
+          .collection(STATS_SUB)
+          .orderBy("count", "desc")
+          .limit(10)
+          .get();
+
+        if (snap.empty) {
+          return interaction.editReply("ยังไม่มีข้อมูลการเชิญเพื่อนเลยน้า");
+        }
+
+        const rows = [];
+        let rank = 1;
+
+        const docs = snap.docs;
+        for (const doc of docs) {
+          const inviterId = doc.id;
+          const data = doc.data() || {};
+          const count = data.count || 0;
+
+          let name = `<@${inviterId}>`;
+          try {
+            const member = await guild.members
+              .fetch(inviterId)
+              .catch(() => null);
+            if (member?.user) {
+              name = `${member.user.tag}`;
+            }
+          } catch (_) {}
+
+          const line = `\`${String(rank).padStart(2, " ")}.\` ${name} — **${count}** คน`;
+          rows.push(line);
+          rank++;
+        }
+
+        const embed = new EmbedBuilder()
+          .setColor(0x9b59b6)
+          .setTitle("Top 10 คำเชิญในเซิร์ฟเวอร์นี้")
+          .setDescription(rows.join("\n"))
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+      } catch (e) {
+        console.error("❌ /topinvite error:", e);
+        try {
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply(
+              "❌ เกิดข้อผิดพลาดในการดึงอันดับเชิญเพื่อน"
+            );
+          } else {
+            await interaction.reply({
+              content: "❌ เกิดข้อผิดพลาดในการดึงอันดับเชิญเพื่อน",
+              ephemeral: true,
+            });
+          }
+        } catch (_) {}
       }
     }
   });
 
-  // ---------- รับค่า Modal & บันทึกตั้งค่า ----------
+  // ====== Modal Submit (/invite) ======
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isModalSubmit()) return;
     if (interaction.customId !== IDS.MODAL) return;
 
     try {
       if (!isAdmin(interaction)) {
-        return interaction.reply({ content: "❌ คำสั่งนี้ใช้ได้เฉพาะแอดมิน", ephemeral: true });
+        return interaction.reply({
+          content: "❌ คำสั่งนี้ใช้ได้เฉพาะแอดมิน",
+          ephemeral: true,
+        });
       }
 
       const guild = interaction.guild;
       const channel = interaction.channel;
 
-      const titleTpl = interaction.fields.getTextInputValue(IDS.INPUT_TITLE).trim();
-      const descTpl = interaction.fields.getTextInputValue(IDS.INPUT_DESC).trim();
+      const titleTpl = interaction.fields
+        .getTextInputValue(IDS.INPUT_TITLE)
+        .trim();
+      const descTpl = interaction.fields
+        .getTextInputValue(IDS.INPUT_DESC)
+        .trim();
 
-      // บันทึกห้องปัจจุบัน + เทมเพลต
-      await db.collection(CONFIG_COL).doc(guild.id).set({
+      const data = {
         channelId: channel.id,
         titleTpl,
         descTpl,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
+      };
 
-      // เตรียม cache ทันที
+      await db.collection(CONFIG_COL).doc(guild.id).set(data, { merge: true });
+      configCache.set(guild.id, data);
+
       await ensureCachePrimed(guild);
 
-      await interaction.reply({
-        content: `✅ ตั้งค่า Invite Message เรียบร้อย\n• Channel: <#${channel.id}>`,
-        ephemeral: true,
-      });
+      // ✅ ทำงานเสร็จแบบไม่ต้องมีข้อความตอบกลับ
+      await interaction.deferUpdate().catch(() => {});
     } catch (e) {
       console.error("❌ save invite template error:", e);
-      if (interaction.isRepliable()) {
-        interaction.reply({ content: "❌ เกิดข้อผิดพลาด กรุณาลองใหม่", ephemeral: true }).catch(() => {});
-      }
+      try {
+        if (!interaction.deferred && !interaction.replied) {
+          await interaction.reply({
+            content: "❌ เกิดข้อผิดพลาด กรุณาลองใหม่",
+            ephemeral: true,
+          });
+        }
+      } catch (_) {}
     }
   });
 
-  // ---------- อัปเดต cache เมื่อมีการสร้าง/ลบลิงก์ ----------
+  // ====== อัปเดต cache เมื่อสร้าง/ลบ invite ======
   client.on(Events.InviteCreate, async (invite) => {
     try {
       const map = await fetchInvitesMap(invite.guild);
       invitesCache.set(invite.guild.id, map);
     } catch (_) {}
   });
+
   client.on(Events.InviteDelete, async (invite) => {
     try {
       const map = await fetchInvitesMap(invite.guild);
@@ -259,54 +390,51 @@ module.exports = (client) => {
     } catch (_) {}
   });
 
-  // ---------- ส่ง Embed เมื่อมีคนเข้า ----------
+  // ====== เมื่อมีคนเข้าเซิร์ฟเวอร์ ======
   client.on(Events.GuildMemberAdd, async (member) => {
     try {
       const guild = member.guild;
 
-      // โหลดตั้งค่า
-      const cfgDoc = await db.collection(CONFIG_COL).doc(guild.id).get();
-      if (!cfgDoc.exists) return;
-      const cfg = cfgDoc.data();
+      const cfg = await getGuildConfig(guild.id);
+      if (!cfg) return;
+
       const reportChannel = guild.channels.cache.get(cfg.channelId);
       if (!reportChannel || !reportChannel.isTextBased()) return;
 
-      // ให้มีค่าเก่าก่อน
       await ensureCachePrimed(guild);
 
-      // old/new snapshot
       const oldMap = getGuildCache(guild.id);
       const newMap = await fetchInvitesMap(guild);
       invitesCache.set(guild.id, newMap);
 
-      // หาลิงก์ที่ถูกใช้
       const used = diffInvites(oldMap, newMap);
 
       const inviterId = used?.inviterId || null;
       const type = used?.kind || "unknown";
       const uses = used?.uses ?? null;
 
+      if (inviterId) {
+        bumpInviteStats(guild.id, inviterId).catch(() => {});
+      }
+
       const userMention = `<@${member.id}>`;
       const inviteText =
-        inviterId ? `<@${inviterId}>`
-        : (type === "vanity" ? "vanity" : "ไม่ทราบ");
+        inviterId ? `<@${inviterId}>` : type === "vanity" ? "vanity" : "ไม่ทราบ";
       const countText = uses != null ? String(uses) : "—";
 
-      // เรนเดอร์เทมเพลต
-      const title = renderTemplate(cfg.titleTpl, { userMention, inviteText, countText }) || "Welcome";
-      const description = renderTemplate(cfg.descTpl, { userMention, inviteText, countText }) || "";
+      const title =
+        renderTemplate(cfg.titleTpl, {
+          userMention,
+          inviteText,
+          countText,
+        }) || "Welcome";
+      const description =
+        renderTemplate(cfg.descTpl, {
+          userMention,
+          inviteText,
+          countText,
+        }) || "";
 
-      // (ออปชัน) เก็บ log/สถิติ
-      saveLogAndBumpStats(guild.id, {
-        memberId: member.id,
-        inviterId: inviterId || null,
-        code: used?.kind === "vanity" ? guild.vanityURLCode : used?.code || null,
-        uses: uses,
-        type,
-        ts: admin.firestore.FieldValue.serverTimestamp(),
-      }).catch(() => {});
-
-      // สร้าง Embed และส่ง
       const embed = new EmbedBuilder()
         .setColor(0x9b59b6)
         .setTitle(title.slice(0, 256))

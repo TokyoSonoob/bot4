@@ -16,8 +16,8 @@ const {
 } = require("discord.js");
 require("dotenv").config();
 
-const LOG_GUILD_ID = "1336555551970164839";
-const LOG_CHANNEL_ID = "1412517818867384482";
+const LOG_GUILD_ID = "1438723080246788239";
+const LOG_CHANNEL_ID = "1438730644288176229";
 
 const client = new Client({
   intents: [
@@ -47,6 +47,7 @@ require("./help")(client);
 require("./sound")(client);
 require("./fix")(client);
 require("./move")(client);
+require("./awaymove")(client);
 /* ---------- global safety ---------- */
 process.on("unhandledRejection", (err) => console.error("[unhandledRejection]", err));
 process.on("uncaughtException", (err) => console.error("[uncaughtException]", err));

@@ -1,10 +1,15 @@
 // private.js
-// /private → เลือกห้องเสียงต้นทาง; เมื่อมีคนเข้าห้องนั้น จะสร้าง "ห้องส่วนตัวของ_{User}" ใต้หมวดเดียวกัน และย้ายคนเข้าไปให้
+// /private → เลือกห้องเสียงต้นทาง; เมื่อมีคนเข้าห้องนั้น จะสร้างห้องส่วนตัวใต้หมวดเดียวกัน ย้ายคนเข้าไป และมีปุ่มควบคุมห้อง
 const {
   SlashCommandBuilder,
   EmbedBuilder,
   ActionRowBuilder,
   StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   Events,
   ChannelType,
   PermissionsBitField,
@@ -17,13 +22,31 @@ const COLLECTION = "privateVoiceConfig"; // Firestore: per-guild config
 const configCache = new Map();
 // กัน Trigger ซ้ำ (voiceStateUpdate ที่มารัว ๆ)
 const processingJoin = new Set();
+// เก็บ id ห้อง private ที่บอทสร้างเอง
+const privateChannels = new Set();
+// เก็บเจ้าของห้อง: Map<voiceChannelId, ownerUserId>
+const privateOwners = new Map();
 
 const IDS = {
   SELECT_BASE: "private_select_base_voice",
 };
 
+const CONTROL_PREFIX = {
+  SET_LIMIT_BUTTON: "private_set_limit_",      // + channelId
+  LIMIT_MODAL: "private_limit_modal_",         // + channelId
+  KICK_BUTTON: "private_kick_",                // + channelId
+  KICK_SELECT: "private_kick_select_",         // + channelId
+};
+
 function isAdmin(interaction) {
   return interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator);
+}
+
+function isRoomController(interaction, channelId) {
+  const ownerId = privateOwners.get(channelId);
+  if (interaction.member?.permissions?.has(PermissionsBitField.Flags.Administrator)) return true;
+  if (!ownerId) return false;
+  return interaction.user.id === ownerId;
 }
 
 module.exports = (client) => {
@@ -35,7 +58,7 @@ module.exports = (client) => {
           .setName("private")
           .setDescription("สร้างห้องส่วนตัวอัตโนมัติ")
           .setDMPermission(false)
-          .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator) // ✅ แอดมินเท่านั้น
+          .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
           .toJSON()
       );
       console.log("✅ Registered /private");
@@ -81,7 +104,6 @@ module.exports = (client) => {
         }
       }
 
-      // รวบรวม "ห้องเสียง" เฉพาะ GuildVoice (ไม่รวม Stage)
       const voices = [...interaction.guild.channels.cache.values()]
         .filter((ch) => ch.type === ChannelType.GuildVoice)
         .sort((a, b) => {
@@ -92,7 +114,10 @@ module.exports = (client) => {
         });
 
       if (voices.length === 0) {
-        return interaction.reply({ content: "⚠️ เซิร์ฟเวอร์นี้ยังไม่มีห้องเสียง (Voice Channel)", ephemeral: true });
+        return interaction.reply({
+          content: "⚠️ เซิร์ฟเวอร์นี้ยังไม่มีห้องเสียง (Voice Channel)",
+          ephemeral: true,
+        });
       }
 
       const limited = voices.slice(0, 25); // StringSelect สูงสุด 25
@@ -129,7 +154,7 @@ module.exports = (client) => {
     }
   });
 
-  // ---------- 3) เลือกห้องเสียงจาก Select ----------
+  // ---------- 3) เลือกห้องเสียงจาก Select (/private) ----------
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isStringSelectMenu()) return;
     if (interaction.customId !== IDS.SELECT_BASE) return;
@@ -145,11 +170,13 @@ module.exports = (client) => {
         return interaction.reply({ content: "❌ ห้องเสียงไม่ถูกต้องหรือไม่พบ", ephemeral: true });
       }
 
-      // บันทึก Firestore + อัปเดต cache
-      await db.collection(COLLECTION).doc(interaction.guild.id).set({
-        baseVoiceId: voice.id,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
+      await db.collection(COLLECTION).doc(interaction.guild.id).set(
+        {
+          baseVoiceId: voice.id,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
 
       configCache.set(interaction.guild.id, { baseVoiceId: voice.id });
 
@@ -164,7 +191,174 @@ module.exports = (client) => {
     }
   });
 
-  // ---------- 4) สร้างห้องส่วนตัวเมื่อมีคนเข้า base voice & ลบเมื่อว่าง ----------
+  // ---------- 4) ปุ่ม + Modal ควบคุมห้อง (ตั้งจำนวนคน / เตะสมาชิก) ----------
+  client.on(Events.InteractionCreate, async (interaction) => {
+    // ปุ่มตั้งจำนวนคน
+    if (interaction.isButton() && interaction.customId.startsWith(CONTROL_PREFIX.SET_LIMIT_BUTTON)) {
+      const channelId = interaction.customId.slice(CONTROL_PREFIX.SET_LIMIT_BUTTON.length);
+      const channel = interaction.guild.channels.cache.get(channelId);
+
+      if (!channel || channel.type !== ChannelType.GuildVoice) {
+        return interaction.reply({ content: "❌ ไม่พบห้องเสียงนี้แล้ว", ephemeral: true });
+      }
+
+      if (!isRoomController(interaction, channelId)) {
+        return interaction.reply({
+          content: "❌ ปุ่มนี้ใช้ได้เฉพาะเจ้าของห้องหรือแอดมิน",
+          ephemeral: true,
+        });
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(CONTROL_PREFIX.LIMIT_MODAL + channelId)
+        .setTitle("ตั้งจำนวนคนสูงสุดของห้องนี้");
+
+      const input = new TextInputBuilder()
+        .setCustomId("max_users")
+        .setLabel("จำนวนคนสูงสุด (1-99) — ใส่ 2 สำหรับห้อง 2 คน")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setPlaceholder("เช่น 2 หรือ 5");
+
+      const row = new ActionRowBuilder().addComponents(input);
+      modal.addComponents(row);
+
+      return interaction.showModal(modal);
+    }
+
+    // ปุ่มเตะสมาชิก
+    if (interaction.isButton() && interaction.customId.startsWith(CONTROL_PREFIX.KICK_BUTTON)) {
+      const channelId = interaction.customId.slice(CONTROL_PREFIX.KICK_BUTTON.length);
+      const channel = interaction.guild.channels.cache.get(channelId);
+
+      if (!channel || channel.type !== ChannelType.GuildVoice) {
+        return interaction.reply({ content: "❌ ไม่พบห้องเสียงนี้แล้ว", ephemeral: true });
+      }
+
+      if (!isRoomController(interaction, channelId)) {
+        return interaction.reply({
+          content: "❌ ปุ่มนี้ใช้ได้เฉพาะเจ้าของห้องหรือแอดมิน",
+          ephemeral: true,
+        });
+      }
+
+      const members = channel.members.filter(
+        (m) => !m.user.bot && m.id !== interaction.user.id
+      );
+
+      if (!members.size) {
+        return interaction.reply({
+          content: "⚠️ ไม่มีสมาชิกอื่นในห้องให้เตะ",
+          ephemeral: true,
+        });
+      }
+
+      const options = members.map((m) => ({
+        label: (m.displayName || m.user.username).slice(0, 100),
+        value: m.id,
+      }));
+
+      const select = new StringSelectMenuBuilder()
+        .setCustomId(CONTROL_PREFIX.KICK_SELECT + channelId)
+        .setPlaceholder("เลือกสมาชิกที่จะเตะออก (เลือกได้หลายคน)")
+        .setMinValues(1)
+        .setMaxValues(Math.min(options.length, 25))
+        .addOptions(options);
+
+      const row = new ActionRowBuilder().addComponents(select);
+
+      return interaction.reply({
+        content: "เลือกสมาชิกที่จะเตะออกจากห้องเสียงนี้",
+        components: [row],
+        ephemeral: true,
+      });
+    }
+
+    // Modal ตั้งจำนวนคน
+    if (interaction.isModalSubmit() && interaction.customId.startsWith(CONTROL_PREFIX.LIMIT_MODAL)) {
+      const channelId = interaction.customId.slice(CONTROL_PREFIX.LIMIT_MODAL.length);
+      const channel = interaction.guild.channels.cache.get(channelId);
+
+      if (!channel || channel.type !== ChannelType.GuildVoice) {
+        return interaction.reply({ content: "❌ ไม่พบห้องเสียงนี้แล้ว", ephemeral: true });
+      }
+
+      if (!isRoomController(interaction, channelId)) {
+        return interaction.reply({
+          content: "❌ ฟอร์มนี้ใช้ได้เฉพาะเจ้าของห้องหรือแอดมิน",
+          ephemeral: true,
+        });
+      }
+
+      const raw = interaction.fields.getTextInputValue("max_users");
+      const n = parseInt(raw, 10);
+
+      if (Number.isNaN(n) || n < 1) {
+        return interaction.reply({
+          content: "❌ กรุณาใส่ตัวเลขจำนวนเต็มตั้งแต่ 1 ขึ้นไป",
+          ephemeral: true,
+        });
+      }
+
+      const limit = Math.max(1, Math.min(n, 99));
+
+      try {
+        await channel.setUserLimit(limit);
+        return interaction.reply({
+          content: `✅ ตั้งจำนวนคนสูงสุดของห้องนี้เป็น **${limit} คน** แล้ว`,
+          ephemeral: true,
+        });
+      } catch (e) {
+        console.error("setUserLimit error:", e);
+        return interaction.reply({
+          content: "❌ ตั้งจำนวนคนไม่สำเร็จ กรุณาลองใหม่",
+          ephemeral: true,
+        });
+      }
+    }
+
+    // เมนูเลือกสมาชิกที่จะเตะ
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith(CONTROL_PREFIX.KICK_SELECT)) {
+      const channelId = interaction.customId.slice(CONTROL_PREFIX.KICK_SELECT.length);
+      const channel = interaction.guild.channels.cache.get(channelId);
+
+      if (!channel || channel.type !== ChannelType.GuildVoice) {
+        return interaction.update({
+          content: "❌ ไม่พบห้องเสียงนี้แล้ว",
+          components: [],
+        });
+      }
+
+      if (!isRoomController(interaction, channelId)) {
+        return interaction.update({
+          content: "❌ ใช้เมนูนี้ได้เฉพาะเจ้าของห้องหรือแอดมิน",
+          components: [],
+        });
+      }
+
+      const targets = interaction.values || [];
+
+      let success = 0;
+      for (const uid of targets) {
+        try {
+          const member = await interaction.guild.members.fetch(uid).catch(() => null);
+          if (!member || !member.voice || member.voice.channelId !== channel.id) continue;
+          await member.voice.setChannel(null, "Kicked from private room");
+          success++;
+        } catch (_) {}
+      }
+
+      return interaction.update({
+        content:
+          success > 0
+            ? `✅ เตะสมาชิกออกจากห้องแล้ว ${success} คน`
+            : "⚠️ ไม่พบใครในห้องให้เตะ",
+        components: [],
+      });
+    }
+  });
+
+  // ---------- 5) สร้างห้องส่วนตัวเมื่อมีคนเข้า base voice & ลบเมื่อว่าง ----------
   client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     try {
       const guild = newState.guild || oldState.guild;
@@ -186,10 +380,15 @@ module.exports = (client) => {
       // ---- A) ลบห้องส่วนตัวเมื่อว่าง ----
       const leftCh = oldState.channel;
       if (leftCh && leftCh.type === ChannelType.GuildVoice) {
-        const isPrivateName = typeof leftCh.name === "string" && leftCh.name.startsWith("ห้องส่วนตัวของ_");
-        if (isPrivateName && leftCh.members.size === 0) {
+        const isPrivateRoom =
+          privateChannels.has(leftCh.id) ||
+          (typeof leftCh.name === "string" && leftCh.name.startsWith("ห้องส่วนตัวของ_"));
+
+        if (isPrivateRoom && leftCh.members.size === 0) {
           try {
             await leftCh.delete("Auto-delete private room when empty");
+            privateChannels.delete(leftCh.id);
+            privateOwners.delete(leftCh.id);
           } catch (e) {
             console.warn("cannot delete empty private room:", e?.message || e);
           }
@@ -209,7 +408,6 @@ module.exports = (client) => {
       const base = newState.channel;
       if (!base || base.type !== ChannelType.GuildVoice) return;
 
-      // กัน Trigger ซ้ำช่วงสั้น ๆ ต่อ user
       const key = `${guild.id}:${newState.id}`;
       if (processingJoin.has(key)) return;
       processingJoin.add(key);
@@ -226,19 +424,21 @@ module.exports = (client) => {
         if (!me?.permissions?.has(p)) return;
       }
 
-      // ค่าพื้นฐานจากห้อง base
       const parentId = base.parentId ?? null;
       const basePos = base.position;
       const bitrate = base.bitrate;
       const user = newState.member.user;
-      const privateName = `ห้องส่วนตัวของ_${user.username}`;
 
-      // สร้างห้องใหม่ ใต้หมวดเดียวกัน + ปรับ Permission ให้เป็นส่วนตัว
+      // ชื่อห้อง private = ชื่อเหมือนห้องหลัก
+      const privateName = base.name;
+
+      // สร้างห้องใหม่ ใต้หมวดเดียวกัน + ปรับ Permission ให้เป็นส่วนตัว + จำกัด 2 คนเริ่มต้น
       const created = await guild.channels.create({
         name: privateName.slice(0, 100),
         type: ChannelType.GuildVoice,
         parent: parentId ?? undefined,
         bitrate,
+        userLimit: 2, // เริ่มต้นห้อง 2 คน
         reason: `Auto private voice for ${user.tag}`,
         permissionOverwrites: [
           {
@@ -261,8 +461,41 @@ module.exports = (client) => {
         ],
       });
 
+      privateChannels.add(created.id);
+      privateOwners.set(created.id, user.id);
+
       // วางตำแหน่งถัดจากห้อง base
-      try { await created.setPosition(basePos + 1); } catch (_) {}
+      try {
+        await created.setPosition(basePos + 1);
+      } catch (_) {}
+
+      // ส่ง embed ควบคุมห้องในแชทของห้องเสียง
+      try {
+        const controlEmbed = new EmbedBuilder()
+          .setColor(0x9b59b6)
+          .setTitle(`ควบคุมห้อง: ${created.name}`)
+          .setDescription(
+            [
+              `เจ้าของห้อง: <@${user.id}>`,
+            ].join("\n")
+          );
+
+        const controlRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(CONTROL_PREFIX.SET_LIMIT_BUTTON + created.id)
+            .setLabel("ตั้งจำนวนคน")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId(CONTROL_PREFIX.KICK_BUTTON + created.id)
+            .setLabel("เตะสมาชิก")
+            .setStyle(ButtonStyle.Danger)
+        );
+
+        await created.send({
+          embeds: [controlEmbed],
+          components: [controlRow],
+        }).catch(() => {});
+      } catch (_) {}
 
       // ย้ายผู้ใช้เข้าไป
       try {
