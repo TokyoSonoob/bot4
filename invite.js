@@ -158,8 +158,50 @@ async function bumpInviteStats(guildId, inviterId) {
   } catch (_) {}
 }
 
+// ===== สร้าง embed Top 10 (ใช้ได้ทั้ง /topinvite และตัวรีเฟรช 10 นาที) =====
+async function buildTopInviteEmbed(guild) {
+  const snap = await db
+    .collection(CONFIG_COL)
+    .doc(guild.id)
+    .collection(STATS_SUB)
+    .orderBy("count", "desc")
+    .limit(10)
+    .get();
+
+  if (snap.empty) return null;
+
+  const rows = [];
+  let rank = 1;
+
+  for (const doc of snap.docs) {
+    const inviterId = doc.id;
+    const data = doc.data() || {};
+    const count = data.count || 0;
+
+    let name = `<@${inviterId}>`;
+    try {
+      const member = await guild.members.fetch(inviterId).catch(() => null);
+      if (member?.user) {
+        name = `${member.user.tag}`;
+      }
+    } catch (_) {}
+
+    const line = `\`${String(rank).padStart(2, " ")}.\` ${name} — **${count}** คน`;
+    rows.push(line);
+    rank++;
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0x9b59b6)
+    .setTitle("Top 10 คำเชิญในเซิร์ฟเวอร์นี้")
+    .setDescription(rows.join("\n"))
+    .setTimestamp();
+
+  return embed;
+}
+
 module.exports = (client) => {
-  // ====== ลงทะเบียน Slash Commands ======
+  // ====== ลงทะเบียน Slash Commands + ตั้ง cron รีเฟรชทุก 10 นาที ======
   client.once(Events.ClientReady, async () => {
     try {
       await client.application.commands.create(
@@ -180,6 +222,9 @@ module.exports = (client) => {
           .setName("topinvite")
           .setDescription("แสดงอันดับ Top 10 คนเชิญเพื่อนในเซิร์ฟเวอร์นี้")
           .setDMPermission(false)
+          .setDefaultMemberPermissions(
+            PermissionsBitField.Flags.Administrator // ✅ เฉพาะแอดมิน
+          )
           .toJSON()
       );
 
@@ -187,6 +232,38 @@ module.exports = (client) => {
     } catch (e) {
       console.error("❌ Register commands failed:", e);
     }
+
+    // 🔁 รีเฟรช Top 10 ทุก 10 นาที
+    setInterval(async () => {
+      try {
+        for (const guild of client.guilds.cache.values()) {
+          const cfg = await getGuildConfig(guild.id);
+          if (!cfg || !cfg.topInviteChannelId || !cfg.topInviteMessageId) {
+            continue;
+          }
+
+          const channel = guild.channels.cache.get(cfg.topInviteChannelId);
+          if (!channel || !channel.isTextBased()) continue;
+
+          let message;
+          try {
+            message = await channel.messages
+              .fetch(cfg.topInviteMessageId)
+              .catch(() => null);
+          } catch {
+            message = null;
+          }
+          if (!message) continue;
+
+          const embed = await buildTopInviteEmbed(guild);
+          if (!embed) continue;
+
+          await message.edit({ embeds: [embed] }).catch(() => {});
+        }
+      } catch (e) {
+        console.error("❌ topinvite refresh error:", e);
+      }
+    }, 10 * 60 * 1000); // 10 นาที
   });
 
   // ====== Chat Input Commands ======
@@ -255,6 +332,13 @@ module.exports = (client) => {
     // ----- /topinvite -----
     if (interaction.commandName === "topinvite") {
       try {
+        if (!isAdmin(interaction)) {
+          return interaction.reply({
+            content: "❌ คำสั่งนี้ใช้ได้เฉพาะแอดมิน",
+            ephemeral: true,
+          });
+        }
+
         const guild = interaction.guild;
         if (!guild) {
           return interaction.reply({
@@ -265,49 +349,26 @@ module.exports = (client) => {
 
         await interaction.deferReply({ ephemeral: false });
 
-        const snap = await db
-          .collection(CONFIG_COL)
-          .doc(guild.id)
-          .collection(STATS_SUB)
-          .orderBy("count", "desc")
-          .limit(10)
-          .get();
-
-        if (snap.empty) {
+        const embed = await buildTopInviteEmbed(guild);
+        if (!embed) {
           return interaction.editReply("ยังไม่มีข้อมูลการเชิญเพื่อนเลยน้า");
         }
 
-        const rows = [];
-        let rank = 1;
+        const msg = await interaction.editReply({ embeds: [embed] });
 
-        const docs = snap.docs;
-        for (const doc of docs) {
-          const inviterId = doc.id;
-          const data = doc.data() || {};
-          const count = data.count || 0;
+        // บันทึก message นี้ไว้เป็น "บอร์ด Top 10" สำหรับรีเฟรชทุก 10 นาที
+        const patch = {
+          topInviteChannelId: msg.channelId,
+          topInviteMessageId: msg.id,
+        };
 
-          let name = `<@${inviterId}>`;
-          try {
-            const member = await guild.members
-              .fetch(inviterId)
-              .catch(() => null);
-            if (member?.user) {
-              name = `${member.user.tag}`;
-            }
-          } catch (_) {}
+        await db
+          .collection(CONFIG_COL)
+          .doc(guild.id)
+          .set(patch, { merge: true });
 
-          const line = `\`${String(rank).padStart(2, " ")}.\` ${name} — **${count}** คน`;
-          rows.push(line);
-          rank++;
-        }
-
-        const embed = new EmbedBuilder()
-          .setColor(0x9b59b6)
-          .setTitle("Top 10 คำเชิญในเซิร์ฟเวอร์นี้")
-          .setDescription(rows.join("\n"))
-          .setTimestamp();
-
-        await interaction.editReply({ embeds: [embed] });
+        const existing = (configCache.get(guild.id) || {});
+        configCache.set(guild.id, { ...existing, ...patch });
       } catch (e) {
         console.error("❌ /topinvite error:", e);
         try {
@@ -356,11 +417,11 @@ module.exports = (client) => {
       };
 
       await db.collection(CONFIG_COL).doc(guild.id).set(data, { merge: true });
-      configCache.set(guild.id, data);
+      const existing = configCache.get(guild.id) || {};
+      configCache.set(guild.id, { ...existing, ...data });
 
       await ensureCachePrimed(guild);
 
-      // ✅ ทำงานเสร็จแบบไม่ต้องมีข้อความตอบกลับ
       await interaction.deferUpdate().catch(() => {});
     } catch (e) {
       console.error("❌ save invite template error:", e);

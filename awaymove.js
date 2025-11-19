@@ -6,7 +6,6 @@ const {
   StringSelectMenuBuilder,
   ButtonBuilder,
   ButtonStyle,
-  EmbedBuilder,
   ChannelType,
 } = require("discord.js");
 const { db, admin } = require("./firebase");
@@ -24,9 +23,7 @@ function makeKey(guildId, userId) {
   return `${guildId}:${userId}`;
 }
 
-//
-// ========= ฟังก์ชันย้ายห้อง ===========
-//
+// ===== ฟังก์ชันย้ายห้อง (เก็บ perms เดิม) =====
 async function runAwayMoveForPair(guild, fromId, toId) {
   const fromCat = guild.channels.cache.get(fromId);
   const toCat = guild.channels.cache.get(toId);
@@ -43,14 +40,13 @@ async function runAwayMoveForPair(guild, fromId, toId) {
   const LIMIT = 50;
 
   const dest = guild.channels.cache.filter(
-    c => c.parentId === toId && !c.isThread()
+    (c) => c.parentId === toId && !c.isThread()
   );
-
   let destCount = dest.size;
 
   const source = guild.channels.cache
     .filter(
-      c =>
+      (c) =>
         c.parentId === fromId &&
         !c.isThread()
     )
@@ -60,9 +56,9 @@ async function runAwayMoveForPair(guild, fromId, toId) {
 
   for (const ch of source.values()) {
     if (destCount >= LIMIT) break;
-
     try {
-      await ch.setParent(toCat, { lockPermissions: true });
+      // ❗ ไม่ lockPermissions → ใช้ permission เดิมของห้อง
+      await ch.setParent(toCat);
       destCount++;
       moved++;
     } catch (_) {}
@@ -71,9 +67,7 @@ async function runAwayMoveForPair(guild, fromId, toId) {
   return moved;
 }
 
-//
-// ========= UI สร้างปุ่มเลือกหมวดหมู่ ===========
-//
+// ===== UI เลือกหมวดหมู่ =====
 function buildCategorySelectRows(guild, current) {
   const cats = guild.channels.cache
     .filter((c) => c.type === ChannelType.GuildCategory)
@@ -121,39 +115,33 @@ function buildCategorySelectRows(guild, current) {
   ];
 }
 
-//
-// =========== MAIN MODULE ================
-//
 module.exports = (client) => {
-  //
-  // ลงทะเบียนคำสั่ง
-  //
+  // ===== ลงทะเบียนคำสั่ง & ตั้ง cron 1 นาที =====
   client.once(Events.ClientReady, async () => {
-    await client.application.commands.create(
-      new SlashCommandBuilder()
-        .setName("awaymove")
-        .setDescription("ระบบย้ายห้องตามหมวดหมู่")
-        .setDMPermission(false)
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
-        .addSubcommand((s) =>
-          s.setName("set").setDescription("ตั้งคู่หมวดหมู่ ต้นทาง → ปลายทาง")
-        )
-        .addSubcommand((s) =>
-          s.setName("delete").setDescription("ลบคู่ที่ตั้งค่าไว้")
-        )
-        .toJSON()
-    );
+    try {
+      await client.application.commands.create(
+        new SlashCommandBuilder()
+          .setName("awaymove")
+          .setDescription("ระบบย้ายห้องตามหมวดหมู่")
+          .setDMPermission(false)
+          .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+          .addSubcommand((s) =>
+            s.setName("set").setDescription("ตั้งคู่หมวดหมู่ ต้นทาง → ปลายทาง")
+          )
+          .addSubcommand((s) =>
+            s.setName("delete").setDescription("ลบคู่ที่ตั้งค่าไว้")
+          )
+          .toJSON()
+      );
+      console.log("✅ awaymove system loaded");
+    } catch (e) {
+      console.error("❌ Register /awaymove failed:", e);
+    }
 
-    console.log("✅ awaymove system loaded");
-
-    //
-    // ############# ระบบตรวจทุก 1 นาที #############
-    //
+    // 🔁 ตรวจทุก 1 นาที แล้วลองย้ายตามคู่ที่ตั้งไว้
     setInterval(async () => {
       try {
-        const guilds = client.guilds.cache;
-
-        for (const guild of guilds.values()) {
+        for (const guild of client.guilds.cache.values()) {
           const snap = await db
             .collection(AWAY_COL)
             .doc(guild.id)
@@ -170,12 +158,10 @@ module.exports = (client) => {
       } catch (e) {
         console.error("❌ awaymove cron error:", e);
       }
-    }, 60 * 1000); // 1 นาที
+    }, 60 * 1000);
   });
 
-  //
-  // /awaymove set & delete
-  //
+  // ===== /awaymove set & delete =====
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
     if (interaction.commandName !== "awaymove") return;
@@ -190,9 +176,6 @@ module.exports = (client) => {
     const guild = interaction.guild;
     const sub = interaction.options.getSubcommand();
 
-    //
-    // ---- ตั้งคู่ ----
-    //
     if (sub === "set") {
       const key = makeKey(guild.id, interaction.user.id);
       const now = awaySelections.get(key) || {};
@@ -205,9 +188,6 @@ module.exports = (client) => {
       });
     }
 
-    //
-    // ---- ลบคู่ ----
-    //
     if (sub === "delete") {
       const snap = await db
         .collection(AWAY_COL)
@@ -232,7 +212,7 @@ module.exports = (client) => {
 
         const btn = new ButtonBuilder()
           .setCustomId(`away_del_${id}`)
-          .setLabel(`${d.fromId} → ${d.toId}`)
+          .setLabel(`${d.fromId} → ${d.toId}`.slice(0, 80))
           .setStyle(ButtonStyle.Danger);
 
         row.addComponents(btn);
@@ -255,9 +235,7 @@ module.exports = (client) => {
     }
   });
 
-  //
-  // เลือกต้นทาง / ปลายทาง
-  //
+  // ===== เลือกหมวดหมู่ src/dst =====
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isStringSelectMenu()) return;
 
@@ -272,21 +250,17 @@ module.exports = (client) => {
     }
 
     awaySelections.set(key, prev);
-
     const rows = buildCategorySelectRows(guild, prev);
 
     return interaction.update({ components: rows });
   });
 
-  //
-  // ปุ่มบันทึกคู่
-  //
+  // ===== ปุ่ม confirm / delete =====
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isButton()) return;
 
     const guild = interaction.guild;
 
-    // ----- ลบคู่ -----
     if (interaction.customId.startsWith("away_del_")) {
       const id = interaction.customId.replace("away_del_", "");
 
@@ -303,7 +277,6 @@ module.exports = (client) => {
       });
     }
 
-    // ----- บันทึก & ย้าย -----
     if (interaction.customId === "awaymove_confirm") {
       const key = makeKey(guild.id, interaction.user.id);
       const sel = awaySelections.get(key);
