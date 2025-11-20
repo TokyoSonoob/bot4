@@ -13,6 +13,9 @@ const { db, admin } = require("./firebase");
 const AWAY_COL = "awayMoves";
 const awaySelections = new Map();
 
+// ให้เหมือน move.js
+const CATEGORY_MAX_CHANNELS = 50;
+
 function isAdmin(interaction) {
   return interaction.memberPermissions?.has(
     PermissionsBitField.Flags.Administrator
@@ -23,45 +26,54 @@ function makeKey(guildId, userId) {
   return `${guildId}:${userId}`;
 }
 
-// ===== ฟังก์ชันย้ายห้อง (เก็บ perms เดิม) =====
+// ===== Helpers ให้ logic เหมือน move =====
+function isCategory(ch) {
+  return ch?.type === ChannelType.GuildCategory;
+}
+function isTextLike(ch) {
+  return (
+    ch?.type === ChannelType.GuildText ||
+    ch?.type === ChannelType.GuildAnnouncement
+  );
+}
+function childrenOf(guild, categoryId) {
+  return guild.channels.cache
+    .filter((ch) => ch.parentId === categoryId && isTextLike(ch))
+    .sort((a, b) => (a.rawPosition ?? a.position) - (b.rawPosition ?? b.position))
+    .toJSON();
+}
+function countChildren(guild, categoryId) {
+  return childrenOf(guild, categoryId).length;
+}
+
+// ===== ฟังก์ชันย้ายห้อง (ย้ายเหมือน move: ไม่ lock perms, top-down, limit 50) =====
 async function runAwayMoveForPair(guild, fromId, toId) {
   const fromCat = guild.channels.cache.get(fromId);
   const toCat = guild.channels.cache.get(toId);
 
-  if (
-    !fromCat ||
-    !toCat ||
-    fromCat.type !== ChannelType.GuildCategory ||
-    toCat.type !== ChannelType.GuildCategory
-  ) {
+  if (!isCategory(fromCat) || !isCategory(toCat)) {
     return 0;
   }
 
-  const LIMIT = 50;
-
-  const dest = guild.channels.cache.filter(
-    (c) => c.parentId === toId && !c.isThread()
-  );
-  let destCount = dest.size;
-
-  const source = guild.channels.cache
-    .filter(
-      (c) =>
-        c.parentId === fromId &&
-        !c.isThread()
-    )
-    .sort((a, b) => a.position - b.position);
-
   let moved = 0;
+  while (true) {
+    const fromChildren = childrenOf(guild, fromId);
+    const toCount = countChildren(guild, toId);
 
-  for (const ch of source.values()) {
-    if (destCount >= LIMIT) break;
+    if (fromChildren.length === 0) break;
+    if (toCount >= CATEGORY_MAX_CHANNELS) break;
+
+    const top = fromChildren[0];
     try {
-      // ❗ ไม่ lockPermissions → ใช้ permission เดิมของห้อง
-      await ch.setParent(toCat);
-      destCount++;
+      // เหมือน move.js: ไม่ lockPermissions → ไม่ไปยุ่ง permission เดิมของห้อง
+      await top.setParent(toId, { lockPermissions: false });
       moved++;
-    } catch (_) {}
+    } catch (_) {
+      // ถ้า error (สิทธิ์ / rate limit ฯลฯ) ก็หยุดรอบนี้ไป
+      break;
+    }
+    // ผ่อน rate limit หน่อย
+    await new Promise((r) => setTimeout(r, 400));
   }
 
   return moved;
@@ -94,9 +106,7 @@ function buildCategorySelectRows(guild, current) {
     .setCustomId("awaymove_dst")
     .setPlaceholder(
       current?.toId
-        ? `ปลายทาง: ${
-            guild.channels.cache.get(current.toId)?.name ?? "ไม่พบ"
-          }`
+        ? `ปลายทาง: ${guild.channels.cache.get(current.toId)?.name ?? "ไม่พบ"}`
         : "เลือกหมวดหมู่ปลายทาง"
     )
     .setMinValues(1)
